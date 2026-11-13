@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "ops": [
+    {
+      "op": "replace-resource",
+      "erp": "2025_asset_groups/ui_package/flow_options.erp",
+      "resource": "eaid://ui_package/screens/settings_container.ui",
+      "fragment": 0,
+      "source": "ui/settings_container.ui"
+    },
+    {
+      "op": "replace-resource",
+      "erp": "2025_asset_groups/ui_package/screens/settings_container.erp",
+      "resource": "eaid://ui_package/screens/settings_container.ui",
+      "fragment": 0,
+      "source": "ui/settings_container.ui"
+    }
+  ]
+}

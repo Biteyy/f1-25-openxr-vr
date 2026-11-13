@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "ops": [
+    {
+      "op": "add-row",
+      "table": "options_system.ui_layer.categories",
+      "from": "options_system.ui_layer.categories.category[_metadata_=cat_vr]",
+      "set": {
+        "_metadata_": "cat_openxr_vr",
+        "ui_command": "open_openxr_vr"
+      }
+    },
+    {
+      "op": "add-row",
+      "table": "options_system.options.ea_trax.options_folder[_metadata_=ea_music]",
+      "from": "options_system.options.ea_trax.options_folder[_metadata_=ea_music].option[_metadata_=licensed_music_header]",
+      "set": {
+        "_metadata_": "openxr_vr_header",
+        "categories": "cat_openxr_vr",
+        "title": "lng_cat_openxr_vr",
+        "description": ""
+      }
+    }
+  ]
+}

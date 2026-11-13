@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "ops": [
+    { "op": "lang.set", "language": "*", "key": "lng_cat_openxr_vr", "value": "VR Visor & Performance" },
+    { "op": "lang.set", "language": "*", "key": "lng_cat_openxr_vr_description_short", "value": "Helmet visor tint, VR render resolution and a VR graphics preset." }
+  ]
+}
