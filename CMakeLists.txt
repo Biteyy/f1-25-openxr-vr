@@ -224,6 +224,12 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/AddonSettings.h
 	DrvOpenXR/MirrorWindow.cpp
 	DrvOpenXR/MirrorWindow.h
+	DrvOpenXR/RainSim.cpp
+	DrvOpenXR/RainSim.h
+	DrvOpenXR/RainDraw.cpp
+	DrvOpenXR/RainDraw.h
+	DrvOpenXR/RainView.cpp
+	DrvOpenXR/RainView.h
 
 	DrvOpenXR/XrTrackedDevice.cpp
 	DrvOpenXR/XrTrackedDevice.h

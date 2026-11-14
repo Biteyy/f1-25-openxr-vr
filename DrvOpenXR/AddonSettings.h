@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "RainSim.h"
+
 /**
  * The Swofty addon's settings, from its engine plugin (openxr_vr_settings.dll) when that is loaded: it holds what
  * the player picked in the launcher or in the game's menus. Without the plugin (eg the DLL used outside Swofty)
@@ -20,5 +22,11 @@ float RenderScale();
 
 /** Whether the VR view window (see MirrorWindow) is on. Without the plugin: off. */
 bool ViewWindow();
+
+/**
+ * Fills feed with the cars around the player and the rain settings (tyre spray, visor drops), for RainSim.
+ * False while there is no live session or no plugin: then nothing is drawn.
+ */
+bool RainFeed(Rain::Feed& feed);
 
 } // namespace AddonSettings

@@ -570,13 +570,17 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 		headers = &app_layer;
 	}
 
-	// Helmet view on top of everything, only while the game draws a 3D scene (not over loading screens)
-	const XrCompositionLayerBaseHeader* helmetLayer = app_layer ? helmet.GetLayer(GetCurrentGraphicsBinding()) : nullptr;
-	if (helmetLayer) {
+	// Tyre spray and visor drops, then the helmet view on top of everything, only while the game draws a 3D scene
+	// (not over loading screens)
+	if (app_layer) {
 		frameLayers.assign(headers, headers + layer_count);
-		frameLayers.push_back(helmetLayer);
-		headers = frameLayers.data();
-		layer_count = (int)frameLayers.size();
+		rain.AddLayers(GetCurrentGraphicsBinding(), projectionViews, mainLayer.space, frameLayers);
+		if (const XrCompositionLayerBaseHeader* helmetLayer = helmet.GetLayer(GetCurrentGraphicsBinding()))
+			frameLayers.push_back(helmetLayer);
+		if ((int)frameLayers.size() != layer_count) {
+			headers = frameLayers.data();
+			layer_count = (int)frameLayers.size();
+		}
 	}
 
 	// It's ok if no layers have been added at this point,
@@ -950,6 +954,7 @@ void XrBackend::PrepareForSessionShutdown()
 	skybox_compositor.reset();
 	overlay_compositors.clear();
 	helmet.Reset();
+	rain.Reset();
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
 	viewWindow.Close(); // its swapchain is on the game's queue, which may go with the session
 #endif

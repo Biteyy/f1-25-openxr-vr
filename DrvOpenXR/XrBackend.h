@@ -10,6 +10,7 @@
 
 #include "HelmetView.h"
 #include "MirrorWindow.h"
+#include "RainView.h"
 #include "XrController.h"
 #include "XrHMD.h"
 
@@ -79,6 +80,7 @@ private:
 
 	// The helmet view layer, and the frame's layer list when it is added (kept to avoid allocating every frame)
 	HelmetView helmet;
+	RainView rain; // tyre spray and visor drops
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
 	MirrorWindow viewWindow; // the addon's "VR view window" setting
 #endif

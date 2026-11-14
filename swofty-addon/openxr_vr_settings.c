@@ -10,6 +10,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,8 @@ static char visor[64] = "clear";
 static unsigned int generation = 1; // bumped on every visor change, so the reader only reloads when it moves
 static float render_scale = 0.0f; // per axis; 0: opencomposite.ini's
 static int view_window = 0; // the VR view window for screen sharing
+static int rain_spray = 2; // tyre spray: 0 off, 1 light, 2 normal, 3 heavy
+static int visor_drops = 1; // rain drops on the visor
 
 /* ---- VR graphics presets ----------------------------------------------------------------------------------------
  * Whole elements of hardware_settings_config_vr.xml, as the game itself writes them. "performance" is the low set
@@ -272,12 +275,30 @@ static void store_render_scale(const char* value)
 	ReleaseSRWLockExclusive(&lock);
 }
 
+static void store_rain_spray(const char* value)
+{
+	static const char* levels[] = { "off", "light", "normal", "heavy" };
+	for (int i = 0; i < 4; i++) {
+		if (value && strcmp(value, levels[i]) == 0) {
+			AcquireSRWLockExclusive(&lock);
+			rain_spray = i;
+			ReleaseSRWLockExclusive(&lock);
+		}
+	}
+}
+
 static void on_change(const char* id, const SwoftySettingValue* value, void* user)
 {
 	(void)user;
 	if (id && value && value->type == SWOFTY_SETTING_TOGGLE && strcmp(id, "view_window") == 0) {
 		AcquireSRWLockExclusive(&lock);
 		view_window = value->toggle != 0;
+		ReleaseSRWLockExclusive(&lock);
+		return;
+	}
+	if (id && value && value->type == SWOFTY_SETTING_TOGGLE && strcmp(id, "visor_drops") == 0) {
+		AcquireSRWLockExclusive(&lock);
+		visor_drops = value->toggle != 0;
 		ReleaseSRWLockExclusive(&lock);
 		return;
 	}
@@ -289,6 +310,8 @@ static void on_change(const char* id, const SwoftySettingValue* value, void* use
 		store_render_scale(value->choice);
 	else if (strcmp(id, "vr_graphics") == 0)
 		apply_graphics(value->choice);
+	else if (strcmp(id, "rain_spray") == 0)
+		store_rain_spray(value->choice);
 }
 
 /* The current visor id (eg "dark_smoke", or "off") copied into out, and a number that changes whenever it does. */
@@ -321,6 +344,112 @@ __declspec(dllexport) int OpenXrVrViewWindow(void)
 	return on;
 }
 
+/* ---- Rain: the cars around the player, for openvr_api.dll's tyre spray and visor drops ---------------------------
+ * The game turns its tyre spray off in VR, so the DLL draws its own (DrvOpenXR/RainSim.h). It needs every car's world
+ * position, velocity and tyres, from Swofty's live state (the core export SwoftyCoreLive, read from game memory, so
+ * the game's UDP output can stay off). The layout is RainSim.h's Rain::Feed; keep the two the same. */
+typedef struct {
+	float pos[3], vel[3];
+	float speed;
+	uint8_t wet; // 0 slicks or unknown, 1 intermediates, 2 full wets
+	uint8_t player;
+	uint8_t known;
+	uint8_t pad;
+} RainCar;
+
+typedef struct {
+	uint32_t size;
+	uint32_t count;
+	uint64_t seq;
+	float steer;
+	uint32_t spray, drops, pad;
+	RainCar cars[32];
+} RainFeed;
+_Static_assert(sizeof(RainCar) == 32 && sizeof(RainFeed) == 32 + 32 * 32, "RainFeed must match RainSim.h's Rain::Feed");
+
+static const SwoftyLive* live;
+static ULONGLONG next_live_look;
+static int rain_logged;
+
+/* The live table, looked up again every few seconds until the core has it; called with the lock held */
+static const SwoftyLive* find_live(void)
+{
+	if (live || GetTickCount64() < next_live_look)
+		return live;
+	next_live_look = GetTickCount64() + 5000;
+	HMODULE core = GetModuleHandleW(L"swofty_core.dll");
+	SwoftyCoreLiveFn get = core ? (SwoftyCoreLiveFn)GetProcAddress(core, "SwoftyCoreLive") : NULL;
+	const SwoftyLive* table = get ? get() : NULL;
+	if (table && table->version >= 1 && table->available && table->session && table->car) {
+		live = table;
+		swofty->log("openxr_vr_settings: live state found (version %u), so VR tyre spray can follow the cars", table->version);
+	} else if (!(rain_logged & 1)) {
+		rain_logged |= 1;
+		swofty->log("openxr_vr_settings: this Swofty core has no live state (SwoftyCoreLive), so no VR tyre spray");
+	}
+	return live;
+}
+
+/* Fills out (a RainFeed of size bytes); 1 while a session is live with cars in it, else 0. */
+__declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
+{
+	if (!out_ || size < sizeof(RainFeed))
+		return 0;
+	RainFeed* out = (RainFeed*)out_;
+	memset(out, 0, sizeof(*out));
+	out->size = sizeof(*out);
+
+	AcquireSRWLockExclusive(&lock);
+	out->spray = (uint32_t)rain_spray;
+	out->drops = (uint32_t)visor_drops;
+	const SwoftyLive* table = (rain_spray || visor_drops) && swofty ? find_live() : NULL;
+	ReleaseSRWLockExclusive(&lock);
+	if (!table || !table->available())
+		return 0;
+
+	SwoftyLiveSession session;
+	memset(&session, 0, sizeof(session));
+	session.version = SWOFTY_LIVE_VERSION;
+	session.size = sizeof(session);
+	if (table->session(&session) != SWOFTY_ASSET_OK)
+		return 0;
+	int subject = session.subject >= 0 ? session.subject : session.player;
+	uint64_t frame = 0;
+	if (table->seq && table->seq(&frame) == SWOFTY_ASSET_OK)
+		out->seq = frame;
+
+	int tyres = 0;
+	for (uint32_t v = 0; v < SWOFTY_LIVE_MAX_CARS && out->count < 32; v++) {
+		SwoftyLiveCar car;
+		memset(&car, 0, sizeof(car));
+		car.version = SWOFTY_LIVE_VERSION;
+		car.size = sizeof(car);
+		if (table->car(v, &car) != SWOFTY_ASSET_OK || !(car.have & SWOFTY_LIVE_HAVE_WORLD))
+			continue;
+		RainCar* c = &out->cars[out->count++];
+		memcpy(c->pos, car.world_pos, sizeof(c->pos));
+		memcpy(c->vel, car.world_vel, sizeof(c->vel));
+		c->speed = (car.have & SWOFTY_LIVE_HAVE_SPEED) ? car.speed
+		                                               : sqrtf(car.world_vel[0] * car.world_vel[0] + car.world_vel[1] * car.world_vel[1] + car.world_vel[2] * car.world_vel[2]);
+		if ((car.have & SWOFTY_LIVE_HAVE_TYRE) && car.tyre_letter) {
+			c->known = 1;
+			c->wet = car.tyre_letter == 'W' ? 2 : car.tyre_letter == 'I' ? 1 : 0;
+			tyres++;
+		}
+		if ((int)v == subject) {
+			c->player = 1;
+			if (car.have & SWOFTY_LIVE_HAVE_STEER)
+				out->steer = car.steer;
+		}
+	}
+
+	if (out->count > 0 && !(rain_logged & 2)) {
+		rain_logged |= 2;
+		swofty->log("openxr_vr_settings: rain feed: %u cars with positions, %d with tyres, player car %d", out->count, tyres, subject);
+	}
+	return out->count > 0;
+}
+
 __declspec(dllexport) const uint32_t SwoftyAddonApi = SWOFTY_API_VERSION;
 
 static const char* read_choice(const char* id)
@@ -339,7 +468,7 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 		api->log("openxr_vr_settings: this Swofty core has no settings API; the defaults apply");
 		return 1;
 	}
-	static const char* ids[] = { "visor", "render_scale", "vr_graphics" };
+	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray" };
 	for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
 		const char* choice = read_choice(ids[i]);
 		if (choice) {
@@ -358,6 +487,13 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 	}
 	if (!api->watch_setting("view_window", on_change, NULL))
 		api->log("openxr_vr_settings: can't watch view_window; changes apply from the next start");
+	toggle.toggle = 1;
+	if (api->setting("visor_drops", SWOFTY_SETTING_TOGGLE, &toggle)) {
+		toggle.type = SWOFTY_SETTING_TOGGLE;
+		on_change("visor_drops", &toggle, NULL);
+	}
+	if (!api->watch_setting("visor_drops", on_change, NULL))
+		api->log("openxr_vr_settings: can't watch visor_drops; changes apply from the next start");
 	api->log("openxr_vr_settings: visor %s, render scale %.2f (0: opencomposite.ini), view window %s", visor, render_scale, view_window ? "on" : "off");
 	return 1;
 }
