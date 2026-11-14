@@ -70,7 +70,8 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 {
 	dt = std::clamp(dt, 0.0f, 0.05f);
 
-	static const float kSprayScales[4] = { 0.0f, 0.5f, 1.0f, 1.6f };
+	// Off, light, normal, heavy: at full density the cloud blocked the view in a test drive, so normal is now a third of it
+	static const float kSprayScales[4] = { 0.0f, 0.15f, 0.35f, 0.65f };
 	if (feed) {
 		sprayScale = kSprayScales[std::min(feed->spray, 3u)];
 		dropsOn = feed->drops != 0;
@@ -167,7 +168,8 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 		}
 		i++;
 	}
-	float veilTarget = std::min(0.75f, 1.0f - std::exp(-inCloud * 0.35f));
+	// The haze inside a cloud: capped, so the track ahead always shows through
+	float veilTarget = std::min(0.3f * std::max(sprayScale, 0.35f) / 0.35f, 1.0f - std::exp(-inCloud * 0.15f));
 	veil += (veilTarget - veil) * (1.0f - std::exp(-dt * 6.0f));
 	if (!haveFrame)
 		veil = std::max(0.0f, veil - dt);
@@ -350,8 +352,11 @@ void Sim::Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const
 	if (veil > 0.002f)
 		drops.push_back({ {}, kVisorHalfSize, kVisorHalfSize, 0.0f, veil, kTileFlat });
 	for (const Bead& b : beads) {
-		float alpha = std::min(b.age / 0.05f, 1.0f) * (1.0f - Smoothstep(b.life - 1.0f, b.life, b.age));
-		drops.push_back({ { b.x, b.y, 0.0f }, b.radius, b.radius * b.stretch, b.angle, alpha, kTileDrop });
+		// Landing: a quick splat, wider and stronger, that settles into a bead within a tenth of a second
+		float splat = std::exp(-b.age / 0.05f);
+		float alpha = std::min(1.0f, 0.85f + 0.4f * splat) * (1.0f - Smoothstep(b.life - 1.0f, b.life, b.age));
+		float r = b.radius * (1.0f + 0.7f * splat);
+		drops.push_back({ { b.x, b.y, 0.0f }, r, r * b.stretch, b.angle, alpha, kTileDrop });
 	}
 }
 

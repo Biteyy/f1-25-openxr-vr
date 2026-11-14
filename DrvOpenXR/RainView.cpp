@@ -7,6 +7,10 @@
 // The visor drops' part of the swapchain, square, in pixels
 static const uint32_t kDropSize = 768;
 
+// How far away the drops' quad is drawn: far enough that both eyes see the same image, so the drops sit on the view
+// itself like drops on a lens. At arm's length (RainSim's plane) they read as a bubble floating around the head.
+static const float kDropLayerDistance = 20.0f;
+
 RainView::~RainView()
 {
 	Reset();
@@ -126,8 +130,10 @@ void RainView::AddLayers(const void* graphicsBinding, const XrCompositionLayerPr
 		dropLayer.subImage.swapchain = chain;
 		dropLayer.subImage.imageRect = { { (int32_t)(2 * eyeWidth), 0 }, { (int32_t)dropSize, (int32_t)dropSize } };
 		dropLayer.subImage.imageArrayIndex = 0;
-		dropLayer.pose = { { 0.f, 0.f, 0.f, 1.f }, { 0.f, 0.f, -Rain::kVisorDistance } };
-		dropLayer.size = { 2.0f * Rain::kVisorHalfSize, 2.0f * Rain::kVisorHalfSize };
+		// The same angles as RainSim's plane, scaled out to kDropLayerDistance
+		const float scale = kDropLayerDistance / Rain::kVisorDistance;
+		dropLayer.pose = { { 0.f, 0.f, 0.f, 1.f }, { 0.f, 0.f, -kDropLayerDistance } };
+		dropLayer.size = { 2.0f * Rain::kVisorHalfSize * scale, 2.0f * Rain::kVisorHalfSize * scale };
 		layers.push_back((const XrCompositionLayerBaseHeader*)&dropLayer);
 	}
 #else

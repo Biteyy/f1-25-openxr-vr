@@ -22,7 +22,7 @@
 
 namespace Rain {
 
-/** The plugin's answer (openxr_vr_settings.dll, OpenXrVrRain), the layout both sides agree on. */
+/** The plugin's answer (bitey_openxr_vr.dll, OpenXrVrRain), the layout both sides agree on. */
 struct Car {
 	float pos[3], vel[3]; // world, metres and metres per second
 	float speed; // metres per second

@@ -5,7 +5,7 @@
 #include "RainSim.h"
 
 /**
- * The Swofty addon's settings, from its engine plugin (openxr_vr_settings.dll) when that is loaded: it holds what
+ * The Swofty addon's settings, from its engine plugin (native/bitey_openxr_vr.dll, built from swofty-addon/openxr_vr_settings.c) when that is loaded: it holds what
  * the player picked in the launcher or in the game's menus. Without the plugin (eg the DLL used outside Swofty)
  * every setting has its default.
  */

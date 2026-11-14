@@ -29,7 +29,9 @@ Plugin Find()
 #ifdef _WIN32
 	if (!found && GetTickCount64() >= nextLook) {
 		nextLook = GetTickCount64() + 1000;
-		if (HMODULE module = GetModuleHandleW(L"openxr_vr_settings.dll")) {
+		// bitey_openxr_vr.dll: its own name, so Swofty never takes it for the old liclf.openxr-vr plugin (openxr_vr_settings.dll),
+		// whose settings it would then read
+		if (HMODULE module = GetModuleHandleW(L"bitey_openxr_vr.dll")) {
 			plugin.visor = (unsigned int (*)(char*, unsigned int))GetProcAddress(module, "OpenXrVrVisor");
 			plugin.renderScale = (float (*)())GetProcAddress(module, "OpenXrVrRenderScale");
 			plugin.viewWindow = (int (*)())GetProcAddress(module, "OpenXrVrViewWindow");

@@ -23,8 +23,10 @@ EXTERN_C IMAGE_DOS_HEADER __ImageBase;
 // well past any headset's field of view, so the tint covers everything the game shows.
 static const float kHelmetHalfAngleDeg = 80.0f;
 
-// How far in front of the eyes the plane sits, in metres: as close as a visor
-static const float kHelmetDistance = 0.15f;
+// How far in front of the eyes the plane is drawn, in metres. Far, so both eyes see the same image: the visor's
+// gradient and streaks then sit on the view like a lens, instead of a sheet at arm's length (which reads as a bubble
+// round the head). The plane is sized from this, so the angles it covers don't change.
+static const float kHelmetDistance = 20.0f;
 
 // The drawn visor's image size, square: enough for its gradients and streaks to stay smooth
 static const unsigned kVisorImageSize = 512;
