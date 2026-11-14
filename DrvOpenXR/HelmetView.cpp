@@ -1,6 +1,7 @@
 #include "HelmetView.h"
 
 #include "AddonSettings.h"
+#include "VisorLook.h"
 
 #include "../OpenOVR/Misc/lodepng.h"
 
@@ -24,6 +25,9 @@ static const float kHelmetHalfAngleDeg = 80.0f;
 
 // How far in front of the eyes the plane sits, in metres: as close as a visor
 static const float kHelmetDistance = 0.15f;
+
+// The drawn visor's image size, square: enough for its gradients and streaks to stay smooth
+static const unsigned kVisorImageSize = 512;
 
 HelmetView::~HelmetView()
 {
@@ -71,14 +75,12 @@ static bool ReadVisorImage(const std::string& visor, std::vector<unsigned char>&
 		return false;
 	}
 
-	// "rgba_RRGGBBAA": one colour, no image (the plugin's tint for the player's driver's visor)
-	if (visor.size() == 13 && visor.compare(0, 5, "rgba_") == 0 && visor.find_first_not_of("0123456789abcdef", 5) == std::string::npos) {
-		unsigned long packed = strtoul(visor.c_str() + 5, nullptr, 16);
-		const unsigned char pixel[4] = { (unsigned char)(packed >> 24), (unsigned char)(packed >> 16), (unsigned char)(packed >> 8), (unsigned char)packed };
-		width = height = 16;
-		rgba.resize(width * height * 4);
-		for (size_t i = 0; i < rgba.size(); i += 4)
-			memcpy(&rgba[i], pixel, 4);
+	// The addon's visors and "rgba_RRGGBBAA" (the plugin's tint for the player's driver's visor) are drawn here, with
+	// a gradient, the sides, iridium colours and reflections (VisorLook); any other id is a PNG next to the DLL
+	VisorLook::Visor look;
+	if (VisorLook::Find(visor, look)) {
+		width = height = kVisorImageSize;
+		VisorLook::Build(look, kVisorImageSize, kHelmetHalfAngleDeg, rgba);
 		return true;
 	}
 

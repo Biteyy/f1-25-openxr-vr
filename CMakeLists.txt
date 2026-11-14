@@ -230,6 +230,8 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/RainDraw.h
 	DrvOpenXR/RainView.cpp
 	DrvOpenXR/RainView.h
+	DrvOpenXR/VisorLook.cpp
+	DrvOpenXR/VisorLook.h
 
 	DrvOpenXR/XrTrackedDevice.cpp
 	DrvOpenXR/XrTrackedDevice.h
