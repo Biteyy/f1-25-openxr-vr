@@ -105,6 +105,8 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	if (playerIndex >= 0) {
 		LearnFrame(cars[playerIndex], dt);
 		playerSpeed = cars[playerIndex].speed;
+		playerLap = cars[playerIndex].lap;
+		trackLength = feed ? feed->trackLength : 0.0f;
 	} else if (feed && dt == 0) {
 		// paused: keep the frame and the cloud as they are
 		return;
@@ -137,7 +139,8 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	// New spray
 	if (haveFrame && sprayScale > 0 && wetness > 0.02f) {
 		for (uint32_t i = 0; i < carCount; i++) {
-			if (Length(FromArray(cars[i].pos) - eye) < kSprayRange)
+			float d = Length(FromArray(cars[i].pos) - eye);
+			if (d < kSprayRange && OnPlayersStretch(cars[i].lap, d))
 				Emit(cars[i], dt);
 		}
 	} else {
@@ -219,6 +222,19 @@ void Sim::LearnFrame(const Car& player, float dt)
 	haveFrame = true;
 }
 
+bool Sim::OnPlayersStretch(float lap, float straightDistance) const
+{
+	// The spray is drawn over the game's image with no depth, so it would show through barriers and hills. A cloud
+	// close in a straight line but much further round the lap (the far side of a hairpin, a straight behind a wall)
+	// is on another part of the track, out of sight: drawn only when the two distances roughly agree.
+	if (lap < 0 || playerLap < 0)
+		return true;
+	float along = std::fabs(lap - playerLap);
+	if (trackLength > 0)
+		along = std::min(along, trackLength - along);
+	return along < straightDistance * 1.3f + 40.0f;
+}
+
 Vec3 Sim::ToTracking(const Vec3& world) const
 {
 	Vec3 rel = world - eye;
@@ -273,6 +289,7 @@ void Sim::Emit(const Car& car, float dt)
 				m.size1 = Random(3.5f, 6.5f);
 			}
 			m.age = 0;
+			m.lap = car.lap;
 			m.alpha = Random(0.08f, 0.14f) * std::min(1.0f, 0.4f + wetness);
 			m.spin = Random(-0.6f, 0.6f);
 			m.angle = Random(0.0f, 2.0f * kPi);
@@ -337,6 +354,8 @@ void Sim::Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const
 			Vec3 at = ToTracking(m.pos);
 			float d = Length(at);
 			if (d < 0.8f || at.z > 2.0f) // too close to draw, or well behind the eyes
+				continue;
+			if (!OnPlayersStretch(m.lap, d)) // on another part of the track: a wall or the ground is in the way
 				continue;
 			float t = m.age / m.life;
 			float fadeIn = std::min(m.age / 0.12f, 1.0f);

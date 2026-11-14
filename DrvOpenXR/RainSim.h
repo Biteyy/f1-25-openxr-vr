@@ -30,6 +30,7 @@ struct Car {
 	uint8_t player; // the car the cockpit camera is in
 	uint8_t known; // the tyre is known
 	uint8_t pad;
+	float lap; // metres round the lap, or -1 when unknown
 };
 
 static const uint32_t kMaxCars = 32;
@@ -41,10 +42,10 @@ struct Feed {
 	float steer; // the player's steering, -1 (left) to 1 (right)
 	uint32_t spray; // setting: 0 off, 1 light, 2 normal, 3 heavy
 	uint32_t drops; // setting: visor drops on
-	uint32_t pad;
+	float trackLength; // metres, or 0 when unknown
 	Car cars[kMaxCars];
 };
-static_assert(sizeof(Car) == 32 && sizeof(Feed) == 32 + 32 * kMaxCars, "Rain::Feed must match the plugin's RainFeed");
+static_assert(sizeof(Car) == 36 && sizeof(Feed) == 32 + 36 * kMaxCars, "Rain::Feed must match the plugin's RainFeed");
 
 struct Vec3 {
 	float x = 0, y = 0, z = 0;
@@ -88,6 +89,7 @@ private:
 	struct Mist {
 		Vec3 pos, vel; // world
 		float age, life, size0, size1, spin, angle, alpha;
+		float lap; // where round the lap it was thrown up (-1 unknown)
 	};
 	struct Bead {
 		float x, y; // visor plane, metres
@@ -97,6 +99,7 @@ private:
 
 	void LearnFrame(const Car& player, float dt);
 	Vec3 ToTracking(const Vec3& world) const;
+	bool OnPlayersStretch(float lap, float straightDistance) const;
 	void Emit(const Car& car, float dt);
 	void UpdateBeads(float dt, float playerSpeed, float hitRate);
 
@@ -132,6 +135,7 @@ private:
 	bool dropsOn = true;
 	float veil = 0; // alpha of the cloud the player is in
 	float playerSpeed = 0;
+	float playerLap = -1, trackLength = 0;
 	float emitDebt[kMaxCars][4] = {};
 	float beadDebt = 0;
 };

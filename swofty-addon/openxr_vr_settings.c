@@ -355,6 +355,7 @@ typedef struct {
 	uint8_t player;
 	uint8_t known;
 	uint8_t pad;
+	float lap; // metres round the lap, or -1 when unknown
 } RainCar;
 
 typedef struct {
@@ -362,10 +363,11 @@ typedef struct {
 	uint32_t count;
 	uint64_t seq;
 	float steer;
-	uint32_t spray, drops, pad;
+	uint32_t spray, drops;
+	float track_length; // metres, 0 when unknown
 	RainCar cars[32];
 } RainFeed;
-_Static_assert(sizeof(RainCar) == 32 && sizeof(RainFeed) == 32 + 32 * 32, "RainFeed must match RainSim.h's Rain::Feed");
+_Static_assert(sizeof(RainCar) == 36 && sizeof(RainFeed) == 32 + 36 * 32, "RainFeed must match RainSim.h's Rain::Feed");
 
 static const SwoftyLive* live;
 static ULONGLONG next_live_look;
@@ -414,6 +416,8 @@ __declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
 	if (table->session(&session) != SWOFTY_ASSET_OK)
 		return 0;
 	int subject = session.subject >= 0 ? session.subject : session.player;
+	if (session.have & SWOFTY_LIVE_SHAVE_TRACK_LENGTH)
+		out->track_length = session.track_length_m;
 	uint64_t frame = 0;
 	if (table->seq && table->seq(&frame) == SWOFTY_ASSET_OK)
 		out->seq = frame;
@@ -427,6 +431,7 @@ __declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
 		if (table->car(v, &car) != SWOFTY_ASSET_OK || !(car.have & SWOFTY_LIVE_HAVE_WORLD))
 			continue;
 		RainCar* c = &out->cars[out->count++];
+		c->lap = (car.have & SWOFTY_LIVE_HAVE_PROGRESS) ? car.lap_m : -1.0f;
 		memcpy(c->pos, car.world_pos, sizeof(c->pos));
 		memcpy(c->vel, car.world_vel, sizeof(c->vel));
 		c->speed = (car.have & SWOFTY_LIVE_HAVE_SPEED) ? car.speed
