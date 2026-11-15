@@ -5,6 +5,7 @@
 #include <openxr/openxr.h>
 
 #include <string>
+#include <vector>
 
 /**
  * Helmet view: the visor's tint, drawn head-locked over the game's whole image so the world is seen through the
@@ -25,6 +26,17 @@ public:
 	/** Destroys the swapchain. Call before the session it belongs to is destroyed. */
 	void Reset();
 
+	/** The visor image being shown (sRGB RGBA, straight alpha), for the VR view window; null while there is none.
+	 * generation changes whenever the image does. */
+	const unsigned char* Image(unsigned& width, unsigned& height, unsigned& generation) const
+	{
+		width = imageWidth, height = imageHeight, generation = imageGeneration;
+		return showing && !image.empty() ? image.data() : nullptr;
+	}
+
+	/** Half the angle the image spans across, in degrees (it is laid on a flat plane, see HelmetView.cpp). */
+	static float HalfAngleDeg();
+
 private:
 	// Loads helmet_visor_<visor>.png into the swapchain (made or remade to the image's size)
 	bool Show(const void* graphicsBinding, const std::string& visor);
@@ -39,4 +51,8 @@ private:
 
 	// Set when the graphics API can't carry the layer, so nothing is retried every frame
 	bool unsupported = false;
+
+	// A copy of the shown image, for the VR view window
+	std::vector<unsigned char> image;
+	unsigned imageWidth = 0, imageHeight = 0, imageGeneration = 0;
 };

@@ -496,8 +496,18 @@ void XrBackend::StoreEyeTexture(
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
 	// The VR view window shows the left eye as the game rendered it
 	if (eye == vr::Eye_Left && texture->eType == vr::TextureType_DirectX12) {
-		if (AddonSettings::ViewWindow())
-			viewWindow.Submit((const vr::D3D12TextureData_t*)texture->handle);
+		if (AddonSettings::ViewWindow()) {
+			// With the helmet visor over it, as the headset shows it
+			MirrorWindow::Visor visor;
+			visor.rgba = helmet.Image(visor.width, visor.height, visor.generation);
+			visor.halfAngleDeg = HelmetView::HalfAngleDeg();
+			const XrFovf& fov = projectionViews[eye].fov;
+			visor.tanLeft = std::tan(fov.angleLeft);
+			visor.tanRight = std::tan(fov.angleRight);
+			visor.tanUp = std::tan(fov.angleUp);
+			visor.tanDown = std::tan(fov.angleDown);
+			viewWindow.Submit((const vr::D3D12TextureData_t*)texture->handle, visor);
+		}
 		else
 			viewWindow.Close();
 	}

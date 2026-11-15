@@ -31,6 +31,11 @@ static const float kHelmetDistance = 20.0f;
 // The drawn visor's image size, square: enough for its gradients and streaks to stay smooth
 static const unsigned kVisorImageSize = 512;
 
+float HelmetView::HalfAngleDeg()
+{
+	return kHelmetHalfAngleDeg;
+}
+
 HelmetView::~HelmetView()
 {
 	Reset();
@@ -288,6 +293,14 @@ bool HelmetView::Show(const void* graphicsBinding, const std::string& visor)
 	layer.size = { 2.0f * halfSpan, 2.0f * halfSpan * (float)height / (float)width };
 
 	OOVR_LOGF("Helmet view: visor %s (%ux%u image, format %lld)", visor.c_str(), width, height, (long long)format);
+	if (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) { // back to RGBA for the copy
+		for (size_t i = 0; i < rgba.size(); i += 4)
+			std::swap(rgba[i], rgba[i + 2]);
+	}
+	image.swap(rgba);
+	imageWidth = width;
+	imageHeight = height;
+	imageGeneration++;
 	return true;
 }
 
