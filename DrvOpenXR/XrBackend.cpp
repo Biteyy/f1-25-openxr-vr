@@ -3,7 +3,6 @@
 //
 
 #include "XrBackend.h"
-#include "HelmetAudio.h"
 #include "AddonSettings.h"
 #include "XrGenericTracker.h"
 #include "generated/interfaces/vrtypes.h"
@@ -525,9 +524,6 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	// Always pump events, even if the session isn't active - this is what makes the session active
 	// in the first place.
 	PumpEvents();
-
-	// The addon's helmet sound: patches the game's audio output once (it then follows the setting)
-	HelmetAudio::Install();
 
 	// If we are getting calls from PostPresentHandOff then skip the calls from other functions as
 	//  there will be other data such as GUI layers to be added before ending the frame.

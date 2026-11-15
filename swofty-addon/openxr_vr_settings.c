@@ -28,7 +28,6 @@ static unsigned int generation = 1; // bumped on every visor change, so the read
 static float render_scale = 0.0f; // per axis; 0: opencomposite.ini's
 static int view_window = 0; // the VR view window for screen sharing
 static int rain_spray = 2; // tyre spray: 0 off, 1 light, 2 normal, 3 heavy
-static int helmet_sound = 0; // the game's sound muffled as inside a helmet: 0 off, 1 light, 2 strong; 3 open (highs lifted)
 
 /* ---- VR graphics presets ----------------------------------------------------------------------------------------
  * Whole elements of hardware_settings_config_vr.xml, as the game itself writes them. "performance" is the low set
@@ -307,12 +306,6 @@ static void on_change(const char* id, const SwoftySettingValue* value, void* use
 		apply_graphics(value->choice);
 	else if (strcmp(id, "rain_spray") == 0)
 		store_rain_spray(value->choice);
-	else if (strcmp(id, "helmet_sound") == 0) {
-		int level = strcmp(value->choice, "strong") == 0 ? 2 : strcmp(value->choice, "light") == 0 ? 1 : strcmp(value->choice, "open") == 0 ? 3 : 0;
-		AcquireSRWLockExclusive(&lock);
-		helmet_sound = level;
-		ReleaseSRWLockExclusive(&lock);
-	}
 }
 
 /* The current visor id (eg "dark_smoke", or "off") copied into out, and a number that changes whenever it does. */
@@ -455,15 +448,6 @@ __declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
 	return out->count > 0;
 }
 
-/* How openvr_api.dll changes the game's sound: 0 off, 1 light or 2 strong helmet muffle, 3 open (highs lifted, to undo the\n   cockpit camera's own muffle). Polled by the audio. */
-__declspec(dllexport) int OpenXrVrHelmetSound(void)
-{
-	AcquireSRWLockShared(&lock);
-	int level = helmet_sound;
-	ReleaseSRWLockShared(&lock);
-	return level;
-}
-
 __declspec(dllexport) const uint32_t SwoftyAddonApi = SWOFTY_API_VERSION;
 
 static const char* read_choice(const char* id)
@@ -482,7 +466,7 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 		api->log("openxr_vr_settings: this Swofty core has no settings API; the defaults apply");
 		return 1;
 	}
-	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray", "helmet_sound" };
+	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray" };
 	for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
 		const char* choice = read_choice(ids[i]);
 		if (choice) {

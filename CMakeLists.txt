@@ -232,8 +232,6 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/RainView.h
 	DrvOpenXR/VisorLook.cpp
 	DrvOpenXR/VisorLook.h
-	DrvOpenXR/HelmetAudio.cpp
-	DrvOpenXR/HelmetAudio.h
 
 	DrvOpenXR/XrTrackedDevice.cpp
 	DrvOpenXR/XrTrackedDevice.h

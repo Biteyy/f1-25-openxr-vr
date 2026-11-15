@@ -16,7 +16,6 @@ struct Plugin {
 	float (*renderScale)() = nullptr;
 	int (*viewWindow)() = nullptr;
 	int (*rain)(void* out, unsigned int size) = nullptr;
-	int (*helmetSound)() = nullptr;
 };
 
 // The plugin's exports, looked up again at most once a second until it is found (it normally loads before VR starts)
@@ -37,7 +36,6 @@ Plugin Find()
 			plugin.renderScale = (float (*)())GetProcAddress(module, "OpenXrVrRenderScale");
 			plugin.viewWindow = (int (*)())GetProcAddress(module, "OpenXrVrViewWindow");
 			plugin.rain = (int (*)(void*, unsigned int))GetProcAddress(module, "OpenXrVrRain");
-			plugin.helmetSound = (int (*)())GetProcAddress(module, "OpenXrVrHelmetSound");
 			found = true;
 			OOVR_LOGF("Addon settings plugin found (visor %s, render scale %s, rain %s)", plugin.visor ? "yes" : "no", plugin.renderScale ? "yes" : "no", plugin.rain ? "yes" : "no");
 		}
@@ -77,9 +75,4 @@ bool AddonSettings::RainFeed(Rain::Feed& feed)
 {
 	Plugin plugin = Find();
 	return plugin.rain && plugin.rain(&feed, (unsigned int)sizeof(feed)) != 0;
-}
-int AddonSettings::HelmetSound()
-{
-	Plugin plugin = Find();
-	return plugin.helmetSound ? plugin.helmetSound() : 0;
 }
