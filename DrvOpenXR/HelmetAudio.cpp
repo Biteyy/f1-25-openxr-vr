@@ -75,19 +75,33 @@ HRESULT STDMETHODCALLTYPE HookedReleaseBuffer(IAudioRenderClient* self, UINT32 f
 		std::lock_guard<std::mutex> guard(clientsMutex);
 		Client* c = Slot(self);
 		if (c && c->buffer) {
-			// Two one-pole low-passes: highs fall away as through a padded helmet, the rumble stays.
-			// Light: about 3 kHz; strong: about 1.4 kHz, a little quieter.
-			float cutoff = level >= 2 ? 1400.0f : 3000.0f;
-			float gain = level >= 2 ? 0.85f : 0.95f;
-			float a = 1.0f - std::exp(-2.0f * 3.14159265f * cutoff / (float)sampleRate);
 			float* s = (float*)c->buffer;
 			unsigned ch = channels < (unsigned)kMaxChannels ? channels : (unsigned)kMaxChannels;
-			for (UINT32 f = 0; f < frames; f++) {
-				for (unsigned k = 0; k < ch; k++) {
-					float& x = s[f * channels + k];
-					c->low1[k] += a * (x - c->low1[k]);
-					c->low2[k] += a * (c->low1[k] - c->low2[k]);
-					x = c->low2[k] * gain;
+			if (level == 3) {
+				// Open: the highs lifted about 6 dB above ~1.8 kHz (the signal plus what a low-pass leaves out), to undo
+				// most of the muffle the game puts on its cockpit cameras; softly limited so loud moments don't clip
+				float a = 1.0f - std::exp(-2.0f * 3.14159265f * 1800.0f / (float)sampleRate);
+				for (UINT32 f = 0; f < frames; f++) {
+					for (unsigned k = 0; k < ch; k++) {
+						float& x = s[f * channels + k];
+						c->low1[k] += a * (x - c->low1[k]);
+						float y = x + 1.0f * (x - c->low1[k]);
+						x = y / (1.0f + 0.25f * std::fabs(y));
+					}
+				}
+			} else {
+				// Two one-pole low-passes: highs fall away as through a padded helmet, the rumble stays.
+				// Light: about 3 kHz; strong: about 1.4 kHz, a little quieter.
+				float cutoff = level >= 2 ? 1400.0f : 3000.0f;
+				float gain = level >= 2 ? 0.85f : 0.95f;
+				float a = 1.0f - std::exp(-2.0f * 3.14159265f * cutoff / (float)sampleRate);
+				for (UINT32 f = 0; f < frames; f++) {
+					for (unsigned k = 0; k < ch; k++) {
+						float& x = s[f * channels + k];
+						c->low1[k] += a * (x - c->low1[k]);
+						c->low2[k] += a * (c->low1[k] - c->low2[k]);
+						x = c->low2[k] * gain;
+					}
 				}
 			}
 		}

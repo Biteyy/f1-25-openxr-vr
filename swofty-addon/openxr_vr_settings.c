@@ -28,7 +28,7 @@ static unsigned int generation = 1; // bumped on every visor change, so the read
 static float render_scale = 0.0f; // per axis; 0: opencomposite.ini's
 static int view_window = 0; // the VR view window for screen sharing
 static int rain_spray = 2; // tyre spray: 0 off, 1 light, 2 normal, 3 heavy
-static int helmet_sound = 0; // the game's sound muffled as inside a helmet: 0 off, 1 light, 2 strong
+static int helmet_sound = 0; // the game's sound muffled as inside a helmet: 0 off, 1 light, 2 strong; 3 open (highs lifted)
 
 /* ---- VR graphics presets ----------------------------------------------------------------------------------------
  * Whole elements of hardware_settings_config_vr.xml, as the game itself writes them. "performance" is the low set
@@ -308,7 +308,7 @@ static void on_change(const char* id, const SwoftySettingValue* value, void* use
 	else if (strcmp(id, "rain_spray") == 0)
 		store_rain_spray(value->choice);
 	else if (strcmp(id, "helmet_sound") == 0) {
-		int level = strcmp(value->choice, "strong") == 0 ? 2 : strcmp(value->choice, "light") == 0 ? 1 : 0;
+		int level = strcmp(value->choice, "strong") == 0 ? 2 : strcmp(value->choice, "light") == 0 ? 1 : strcmp(value->choice, "open") == 0 ? 3 : 0;
 		AcquireSRWLockExclusive(&lock);
 		helmet_sound = level;
 		ReleaseSRWLockExclusive(&lock);
@@ -455,7 +455,7 @@ __declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
 	return out->count > 0;
 }
 
-/* How much openvr_api.dll muffles the game's sound, as inside a helmet: 0 off, 1 light, 2 strong. Polled by the audio. */
+/* How openvr_api.dll changes the game's sound: 0 off, 1 light or 2 strong helmet muffle, 3 open (highs lifted, to undo the\n   cockpit camera's own muffle). Polled by the audio. */
 __declspec(dllexport) int OpenXrVrHelmetSound(void)
 {
 	AcquireSRWLockShared(&lock);
