@@ -121,9 +121,6 @@ void Build(const Visor& visor, unsigned size, float halfAngleDeg, std::vector<un
 			alpha += (0.16f + 0.12f * base) * Smooth(8.0f, 38.0f, elevation) * strength;
 			alpha -= 0.04f * Smooth(-5.0f, -35.0f, elevation) * strength;
 			alpha += 0.08f * Smooth(35.0f, 75.0f, std::fabs(azimuth)) * strength;
-			// The tear-off's edge: a faint soft line across the top
-			float edge = std::fabs(elevation - 30.0f);
-			alpha += 0.035f * (1.0f - Smooth(0.0f, 0.6f, edge)) * std::min(1.0f, 0.4f + strength);
 			// Faint smudges in the plastic
 			float n = Noise(azimuth / 9.0f + 3.1f, elevation / 9.0f + 7.7f) * 0.6f + Noise(azimuth / 3.5f, elevation / 3.5f) * 0.4f;
 			alpha += (n - 0.5f) * 0.03f * strength;
@@ -144,22 +141,28 @@ void Build(const Visor& visor, unsigned size, float halfAngleDeg, std::vector<un
 			for (int i = 0; i < 3; i++)
 				c[i] *= deepen;
 
-			// A soft streak of light off the visor's curve, up and to the left, plus a fainter one lower right:
-			// added light, so it lifts the colour and the opacity together
-			float s1 = std::fabs((azimuth + 25.0f) * 0.6f + (elevation - 18.0f)) / 6.0f;
-			float s2 = std::fabs((azimuth - 30.0f) * 0.7f + (elevation + 20.0f)) / 9.0f;
-			float glint = 0.05f * std::exp(-s1 * s1) * (1.0f - Smooth(10.0f, 60.0f, std::fabs(azimuth + 25.0f)))
-			    + 0.025f * std::exp(-s2 * s2) * (1.0f - Smooth(10.0f, 50.0f, std::fabs(azimuth - 30.0f)));
-			if (visor.iridium)
-				glint *= 1.6f;
 			alpha = std::clamp(alpha, 0.0f, 0.92f);
-			// Straight alpha: mix the glint's white into the tint by its share of the total
-			float total = std::min(0.95f, alpha + glint * (1.0f - alpha));
-			float w = total > 0.0001f ? glint * (1.0f - alpha) / total : 0.0f;
+
+			// The helmet round the visor's opening, out of focus: its brow above, the chin bar below, closing in a
+			// little towards the far sides. A rounded rectangle in angles, opaque outside with a soft edge.
+			// Worked on the image plane itself (tangents), so the edges come out as smooth lines: the brow straight
+			// across at about 33 degrees up, dipping a little at the sides; the chin bar at about 42 down (below the wheel), rising
+			// towards the sides; the opening ends well past the sides of a headset's view.
+			float ax = std::fabs(u);
+			float top = 0.65f * (1.0f - 0.10f * std::min(ax / 1.4f, 1.0f) * std::min(ax / 1.4f, 1.0f));
+			float bottom = 0.90f * (1.0f - 0.18f * std::min(ax / 1.4f, 1.0f) * std::min(ax / 1.4f, 1.0f));
+			float ey = v >= 0 ? v / top : -v / bottom;
+			float ex = ax / 2.6f;
+			float shape = std::pow(std::pow(ex, 4.0f) + std::pow(ey, 4.0f), 0.25f);
+			float helmet = Smooth(0.90f, 1.10f, shape);
+			// The lining: near black, a shade lighter just at the edge where light from the opening falls on it
+			float lit = (1.0f - Smooth(1.0f, 1.25f, shape)) * helmet;
+			float shell[3] = { 0.012f + 0.035f * lit, 0.012f + 0.035f * lit, 0.014f + 0.04f * lit };
+
 			unsigned char* p = &rgba[((size_t)y * size + x) * 4];
 			for (int i = 0; i < 3; i++)
-				p[i] = ToSrgb8(c[i] * (1.0f - w) + 0.9f * w);
-			p[3] = (unsigned char)std::lround(total * 255.0f);
+				p[i] = ToSrgb8(c[i] + (shell[i] - c[i]) * helmet);
+			p[3] = (unsigned char)std::lround((alpha + (1.0f - alpha) * helmet) * 255.0f);
 		}
 	}
 }

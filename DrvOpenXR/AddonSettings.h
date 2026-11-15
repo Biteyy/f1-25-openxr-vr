@@ -29,4 +29,7 @@ bool ViewWindow();
  */
 bool RainFeed(Rain::Feed& feed);
 
+/** How much the game's sound is muffled, as inside a helmet (see HelmetAudio): 0 off, 1 light, 2 strong. */
+int HelmetSound();
+
 } // namespace AddonSettings

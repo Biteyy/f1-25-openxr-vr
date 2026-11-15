@@ -1,10 +1,10 @@
 #pragma once
 
 /**
- * The helmet visor's image (see HelmetView): a tint that isn't one flat colour, as a real visor isn't. It is
- * darker towards the top (visors are tinted heavier above the eyes) and a little at the sides (the curved plastic is
- * looked through at a slant there), an iridium visor shifts colour across its width, and there is a faint light
- * streak off the visor's curve, very faint smudges and the edge of the tear-offs near the top.
+ * The helmet visor's image (see HelmetView): the view out through a helmet. The helmet's lining shows, dark and out of
+ * focus, as the brow above and the chin bar below (under the steering wheel); between them the visor's tint is darker
+ * towards the top and a little at the sides, an iridium visor shifts colour across its width, and there are very
+ * faint smudges.
  *
  * No graphics here: it fills an RGBA8 image (sRGB colours, straight alpha) for HelmetView to upload.
  */
