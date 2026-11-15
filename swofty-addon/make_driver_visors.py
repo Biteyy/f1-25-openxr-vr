@@ -1,29 +1,24 @@
-"""Builds driver_visors.h for the OpenXR VR addon's plugin: the visor tint of each stock F1 driver's helmet, by the
-game's driver id (stat_id, the id telemetry reports) and season.
+"""Builds driver_visors.h for the OpenXR VR addon's plugin: the visor tint of every driver helmet in the game's files,
+by the helmet's name (its folder, eg 2026-ferrari_lewis_hamilton, which is also the name of the driver customisation
+and the helmet row in the game's database).
 
-Each driver's helmet has its own visor material whose colour is a texture, eg
-character_package/drivers/male/2025-ferrari_lewis_hamilton/textures/lewis_hamilton_visor_d.tif (BC1). This reads
-every <season>-<team>_<driver> helmet archive of the F1 teams for 2024-2026, averages the visor texture's top mip and
-turns it into a tint: a coloured visor tints the view its colour, a grey one darkens it by how dark it is.
+Each helmet with a visor of its own has a visor material whose colour is a texture, eg
+character_package/drivers/male/2025-ferrari_lewis_hamilton/textures/lewis_hamilton_visor_d.tif (BC1). This reads every
+helmet archive under character_package/drivers, averages the visor texture's top mip and turns it into a tint: a
+coloured visor tints the view its colour, a grey one darkens it by how dark it is. Helmets without one use the game's
+generic (clear) visor and are left out. The plugin finds the player's helmet in the game's database at run time.
 
-Usage: python make_driver_visors.py <Swofty tools dir with erp.py> <F1 25 folder> <swofty.exe> <output .h> [previews dir]
+Usage: python make_driver_visors.py <Swofty tools dir with erp.py> <F1 25 folder> <output .h> [previews dir]
 Needs the zstandard module (the archives are zstd-compressed).
 """
 
 import colorsys
 import importlib.util
 import os
-import re
 import struct
-import subprocess
 import sys
 
 import zstandard
-
-SEASONS = ("2024", "2025", "2026")
-# Base team liveries; special ones (eg ferrarimonza, williamsgulf) are left out
-TEAMS = {"ferrari", "mercedes", "redbull", "mclaren", "williams", "forceindia", "renault", "haas", "sauber", "tororosso",
-         "cadillac"}
 
 
 def load_erp(tools):
@@ -73,11 +68,6 @@ def bc1_pixels(data, w, h):
     return out
 
 
-def to_linear(c):
-    c /= 255.0
-    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-
 def tint(mean):
     """(r, g, b, a) 8-bit sRGB with straight alpha, from the visor texture's mean sRGB colour."""
     h, s, v = colorsys.rgb_to_hsv(*(c / 255.0 for c in mean))
@@ -89,12 +79,6 @@ def tint(mean):
     return (round(r * 255), round(g * 255), round(b * 255), round(0.35 * 255))
 
 
-def stat_id(swofty, label):
-    out = subprocess.run([swofty, "db", "get", f"entrants.drivers.driver[_metadata_={label}]"], capture_output=True, text=True)
-    m = re.search(r"^\s*stat_id\s+(\d+)\s*$", out.stdout, re.M)
-    return int(m.group(1)) if m else None
-
-
 def write_png(path, rgb_rows):
     import zlib
     h, w = len(rgb_rows), len(rgb_rows[0])
@@ -104,27 +88,29 @@ def write_png(path, rgb_rows):
         f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-def main(tools, game, swofty, out_path, previews=None):
+def main(tools, game, out_path, previews=None):
     erp = load_erp(tools)
     root = os.path.join(game, "2025_asset_groups", "character_package", "drivers")
-    rows = []  # (stat_id, season, rgba, key, mean)
-    ids = {}
+    rows = {}  # helmet name -> (rgba, mean)
+    generic = 0
     for gender in sorted(os.listdir(root)):
         gdir = os.path.join(root, gender)
         if not os.path.isdir(gdir):
             continue
         for key in sorted(os.listdir(gdir)):
-            m = re.fullmatch(r"(\d{4})-([a-z]+)_(.+)", key)
-            if not m or m.group(1) not in SEASONS or m.group(2) not in TEAMS:
+            kdir = os.path.join(gdir, key)
+            if not os.path.isdir(kdir) or key in rows:
                 continue
-            season, team, label = m.groups()
-            helmet = [f for f in os.listdir(os.path.join(gdir, key)) if f.endswith("_helmet.erp")]
+            helmet = sorted(f for f in os.listdir(kdir) if f.endswith("_helmet.erp"))
             if not helmet:
                 continue
-            name, frags = resource(erp, os.path.join(gdir, key, helmet[0]), "visor_d.tif.image")
-            if not frags:
-                # No visor material of its own: the game's generic visor, which the plugin treats as clear
-                print("no visor texture (generic visor):", key)
+            try:
+                name, frags = resource(erp, os.path.join(kdir, helmet[0]), "visor_d.tif.image")
+            except Exception as e:  # an archive this reader doesn't know
+                print(f"skipped {key}: {e}")
+                continue
+            if not frags or len(frags) < 2:
+                generic += 1  # the game's generic visor: the plugin treats it as clear
                 continue
             head = struct.unpack("<10I", frags[0][:40])
             w, h, fmt = head[3], head[4], head[2]
@@ -132,31 +118,27 @@ def main(tools, game, swofty, out_path, previews=None):
                 print(f"skipped {key}: texture format {fmt}, not BC1")
                 continue
             px = bc1_pixels(frags[1], w, h)
-            mean = tuple(round(sum(p[i] for p in px) / len(px)) for i in range(3))
-            if label not in ids:
-                ids[label] = stat_id(swofty, label)
-            if ids[label] is None:
-                print("no driver row:", label)
+            if not px:
                 continue
-            rgba = tint(mean)
-            rows.append((ids[label], int(season), rgba, key, mean))
-            print(f"{key:45} id {ids[label]:4} mean {mean} -> tint {rgba}")
+            mean = tuple(round(sum(p[i] for p in px) / len(px)) for i in range(3))
+            rows[key] = (tint(mean), mean)
             if previews:
                 os.makedirs(previews, exist_ok=True)
                 write_png(os.path.join(previews, key + ".png"), [[mean] * 64] * 16)
 
-    rows.sort()
     with open(out_path, "w", newline="\n") as f:
         f.write("/* Generated by make_driver_visors.py from the game's helmet visor textures. Do not edit. */\n")
-        f.write("typedef struct { unsigned short driver; unsigned short season; unsigned char rgba[4]; } DriverVisor;\n\n")
+        f.write("/* Sorted by helmet name (strcmp), for bsearch. */\n")
+        f.write("typedef struct { const char* helmet; unsigned char rgba[4]; } DriverVisor;\n\n")
         f.write("static const DriverVisor driver_visors[] = {\n")
-        for sid, season, rgba, key, mean in rows:
-            f.write(f"\t{{ {sid}, {season}, {{ {rgba[0]}, {rgba[1]}, {rgba[2]}, {rgba[3]} }} }}, /* {key}, visor {mean} */\n")
+        for key in sorted(rows, key=lambda k: k.encode()):
+            rgba, mean = rows[key]
+            f.write(f"\t{{ \"{key}\", {{ {rgba[0]}, {rgba[1]}, {rgba[2]}, {rgba[3]} }} }}, /* visor {mean} */\n")
         f.write("};\n")
-    print("wrote", out_path, len(rows), "visors")
+    print("wrote", out_path, len(rows), "visors;", generic, "helmets with the generic visor")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (5, 6):
+    if len(sys.argv) not in (4, 5):
         sys.exit(__doc__)
     main(*sys.argv[1:])

@@ -196,59 +196,195 @@ static void apply_graphics(const char* preset)
 /* ---- Settings ---------------------------------------------------------------------------------------------------- */
 
 /* ---- The player's driver's visor ---------------------------------------------------------------------------------
- * "driver": the visor of the helmet the player's driver wears, from telemetry (driver id and team) and the table of
- * stock helmets' visor colours. The visor id handed on is then "rgba_RRGGBBAA", which openvr_api.dll draws as that
- * colour. Drivers the table lacks (your own driver, mod drivers, helmets with the game's generic visor) get "clear". */
+ * "driver": the visor of the helmet the player's driver wears. The driver and team come from the loaded career (the
+ * game's UDP telemetry, the other source, is off in VR); the game's database then gives the helmet: the line-up seat
+ * of that driver in that team names a driver customisation, whose name is the helmet's (eg 2026-ferrari_lewis_hamilton).
+ * driver_visors.h has the visor colour of every helmet in the game's files, read from each helmet's visor texture by
+ * make_driver_visors.py. The visor id handed on is then "rgba_RRGGBBAA", which openvr_api.dll draws as that colour.
+ * Helmets with the game's generic visor, and drivers it can't place (your own created driver), get "clear". */
 #include "driver_visors.h"
 
 static int follow_driver; // the setting is "driver"
 static char driver_visor[64] = "clear"; // what that resolves to now
 static ULONGLONG next_driver_look;
+static uint32_t looked_driver = ~0u, looked_team = ~0u; // the career keys last looked up
 
-static const DriverVisor* find_driver_visor(unsigned driver, unsigned season)
+static int visor_cmp(const void* key, const void* entry)
 {
-	// The driver's helmet for that season, else the nearest season's
-	static const int order[3][3] = { { 2025, 2026, 2024 }, { 2026, 2025, 2024 }, { 2024, 2025, 2026 } };
-	const int* seasons = order[season == 2026 ? 1 : season == 2024 ? 2 : 0];
-	for (int i = 0; i < 3; i++) {
-		for (size_t j = 0; j < sizeof(driver_visors) / sizeof(driver_visors[0]); j++) {
-			if (driver_visors[j].driver == driver && driver_visors[j].season == seasons[i])
-				return &driver_visors[j];
+	return strcmp((const char*)key, ((const DriverVisor*)entry)->helmet);
+}
+
+static const DriverVisor* find_helmet_visor(const char* helmet)
+{
+	return (const DriverVisor*)bsearch(helmet, driver_visors, sizeof(driver_visors) / sizeof(driver_visors[0]), sizeof(driver_visors[0]), visor_cmp);
+}
+
+/* A text, enum or reference value of the game's database copied into out ("" and 0 when missing) */
+static int db_text(const char* key, char* out, size_t cap)
+{
+	SwoftyDbValue v = { 0 };
+	out[0] = 0;
+	if (swofty->db->get(key, &v) != 0 || !v.s || !*v.s || (v.tag != SWOFTY_DB_STRING && v.tag != SWOFTY_DB_ENUM && v.tag != SWOFTY_DB_ID))
+		return 0;
+	strncpy_s(out, cap, v.s, _TRUNCATE);
+	return 1;
+}
+
+static int cell_text(const SwoftyDbCursor* c, const char* field, char* out, size_t cap)
+{
+	SwoftyDbValue v = { 0 };
+	out[0] = 0;
+	if (swofty->db->cell(c, field, &v) != 0 || !v.s || !*v.s)
+		return 0;
+	strncpy_s(out, cap, v.s, _TRUNCATE);
+	return 1;
+}
+
+/* The label of the row of table whose stat_id is stat */
+static int label_of(const char* table, uint32_t stat, char* out, size_t cap)
+{
+	SwoftyDbCursor c;
+	memset(&c, 0, sizeof(c));
+	out[0] = 0;
+	if (swofty->db->open(table, &c) != 0)
+		return 0;
+	do {
+		SwoftyDbValue v = { 0 };
+		const char* name = swofty->db->row_name(&c);
+		if (name && swofty->db->cell(&c, "stat_id", &v) == 0 && v.i == (int64_t)stat) {
+			strncpy_s(out, cap, name, _TRUNCATE);
+			return 1;
+		}
+	} while (swofty->db->step(&c) == 0);
+	return 0;
+}
+
+static int year_of(const char* key)
+{
+	return (strlen(key) > 5 && key[4] == '-') ? atoi(key) : 0;
+}
+
+/* The driver customisation (= helmet) the driver wears: his seat in the team's line-up, else his entrant of the
+ * team's season (a team label ending _26 is 2026), else his latest */
+static int helmet_of(const char* driver, const char* team, char* out, size_t cap)
+{
+	char key[192], text[96], ref[96];
+	out[0] = 0;
+	if (*team) {
+		int64_t lists = 0;
+		swofty->db->int_at("entrants.entrant_lists._entrant_list_instancecount_", &lists);
+		for (int64_t l = 0; l < lists && l < 1000; l++) {
+			int64_t seats = 0;
+			sprintf_s(key, sizeof(key), "entrants.entrant_lists.entrant_list_%lld._entrant_instancecount_", l);
+			if (swofty->db->int_at(key, &seats) != 0)
+				continue;
+			for (int64_t s = 0; s < seats && s < 100; s++) {
+				sprintf_s(key, sizeof(key), "entrants.entrant_lists.entrant_list_%lld.entrant_%lld.team", l, s);
+				if (!db_text(key, text, sizeof(text)) || strcmp(text, team) != 0)
+					continue;
+				// The seat names its driver itself, or through a shared entrant
+				sprintf_s(key, sizeof(key), "entrants.entrant_lists.entrant_list_%lld.entrant_%lld.driver", l, s);
+				if (db_text(key, text, sizeof(text)) && strcmp(text, driver) == 0) {
+					sprintf_s(key, sizeof(key), "entrants.entrant_lists.entrant_list_%lld.entrant_%lld.driver_customisation", l, s);
+					if (db_text(key, out, cap))
+						return 1;
+				}
+				sprintf_s(key, sizeof(key), "entrants.entrant_lists.entrant_list_%lld.entrant_%lld.entrant_reference", l, s);
+				if (!db_text(key, ref, sizeof(ref)))
+					continue;
+				SwoftyDbCursor c;
+				memset(&c, 0, sizeof(c));
+				if (swofty->db->row("entrants.entrant_lists.entrants", ref, &c) != 0)
+					continue;
+				if (cell_text(&c, "driver", text, sizeof(text)) && strcmp(text, driver) == 0 && cell_text(&c, "driver_customisation", out, cap))
+					return 1;
+			}
 		}
 	}
-	return NULL;
+
+	int want = 0;
+	size_t n = strlen(team);
+	if (n > 3 && team[n - 3] == '_' && team[n - 2] >= '0' && team[n - 2] <= '9' && team[n - 1] >= '0' && team[n - 1] <= '9')
+		want = 2000 + atoi(team + n - 2);
+	SwoftyDbCursor c;
+	memset(&c, 0, sizeof(c));
+	if (swofty->db->open("entrants.entrant_lists.entrants", &c) != 0)
+		return 0;
+	int best = -1;
+	do {
+		if (!cell_text(&c, "driver", text, sizeof(text)) || strcmp(text, driver) != 0 || !cell_text(&c, "driver_customisation", text, sizeof(text)))
+			continue;
+		int y = year_of(text);
+		int score = (want && y == want ? 10000 : 0) + y;
+		if (score > best) {
+			best = score;
+			strncpy_s(out, cap, text, _TRUNCATE);
+		}
+	} while (swofty->db->step(&c) == 0);
+	return best >= 0;
+}
+
+/* A career's packed key: the stat id in the high half (as career events give a driver, "stat id << 16") */
+static uint32_t unpack_key(uint32_t key)
+{
+	return key > 0xffff ? key >> 16 : key;
 }
 
 /* Looks the player's driver up again, at most once a second; called with the lock held exclusively */
 static void update_driver_visor(void)
 {
 	ULONGLONG now = GetTickCount64();
-	if (now < next_driver_look)
+	if (now < next_driver_look || !swofty || swofty->version < 5)
 		return;
 	next_driver_look = now + 1000;
 
-	const SwoftyTelemetry* tel = swofty && swofty->version >= 5 ? swofty->telemetry : NULL;
-	if (!tel || !tel->available || !tel->available())
-		return; // no session: keep the last driver's visor
-	SwoftySessionState session = { 0 };
-	SwoftyParticipant me = { 0 };
-	if (tel->session(&session) != 0 || tel->participant(session.player_index, &me) != 0 || me.version < 2)
-		return;
+	uint32_t driver_key = 0, team_key = 0, driver_stat = 0, team_stat = 0;
+	const char* source = NULL;
+	const SwoftyCareer* career = swofty->career;
+	SwoftyCareerState state;
+	memset(&state, 0, sizeof(state));
+	if (career && career->available && career->available() && career->state && career->state(&state) == 0 && state.loaded && state.player_driver) {
+		driver_key = state.player_driver;
+		team_key = state.player_team;
+		driver_stat = unpack_key(driver_key);
+		team_stat = team_key ? unpack_key(team_key) : 0;
+		source = "career";
+	} else {
+		// Outside a career: the game's UDP telemetry, when it's on (it's off in VR)
+		const SwoftyTelemetry* tel = swofty->telemetry;
+		SwoftySessionState session = { 0 };
+		SwoftyParticipant me = { 0 };
+		if (tel && tel->available && tel->available() && tel->session(&session) == 0 && tel->participant(session.player_index, &me) == 0 && me.version >= 2 && me.name[0]) {
+			driver_key = driver_stat = me.driver_id;
+			source = "telemetry";
+		}
+	}
+	if (!source || (driver_key == looked_driver && team_key == looked_team))
+		return; // no driver known yet (keep the last visor), or the same one as last time
+	looked_driver = driver_key;
+	looked_team = team_key;
 
-	// 2026 teams have the stock 2025 team id + 476
-	const DriverVisor* found = find_driver_visor(me.driver_id, me.team >= 476 ? 2026 : 2025);
-	char id[64];
+	char driver[96] = "", team[96] = "", helmet[96] = "", id[64] = "clear";
+	if (swofty->db && swofty->db->available && swofty->db->available()) {
+		if (label_of("entrants.drivers", driver_stat, driver, sizeof(driver))) {
+			if (team_stat)
+				label_of("entrants.teams", team_stat, team, sizeof(team));
+			helmet_of(driver, team, helmet, sizeof(helmet));
+		}
+	} else {
+		looked_driver = looked_team = ~0u; // try again once the database is up
+	}
+	const DriverVisor* found = *helmet ? find_helmet_visor(helmet) : NULL;
 	if (found)
 		sprintf_s(id, sizeof(id), "rgba_%02x%02x%02x%02x", found->rgba[0], found->rgba[1], found->rgba[2], found->rgba[3]);
-	else
-		strcpy_s(id, sizeof(id), "clear");
+	swofty->log("openxr_vr_settings: driver from %s: key 0x%x (stat %u, %s), team key 0x%x (stat %u, %s): helmet %s, visor %s%s", source,
+	    driver_key, driver_stat, *driver ? driver : "not in the drivers table", team_key, team_stat, *team ? team : "-", *helmet ? helmet : "not found", id,
+	    *helmet && !found ? " (the helmet has the game's generic visor)" : "");
 	if (strcmp(id, driver_visor) != 0) {
 		strcpy_s(driver_visor, sizeof(driver_visor), id);
 		generation++;
-		swofty->log("openxr_vr_settings: driver %u (team %u): visor %s", me.driver_id, me.team, id);
 	}
 }
-
 static void store_visor(const char* value)
 {
 	AcquireSRWLockExclusive(&lock);
@@ -256,6 +392,7 @@ static void store_visor(const char* value)
 		strncpy_s(visor, sizeof(visor), value, _TRUNCATE);
 		follow_driver = strcmp(visor, "driver") == 0;
 		next_driver_look = 0;
+		looked_driver = looked_team = ~0u;
 		generation++;
 	}
 	ReleaseSRWLockExclusive(&lock);
