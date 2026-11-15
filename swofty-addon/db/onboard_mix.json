@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "ops": [
+    {
+      "op": "set",
+      "select": "{7246920a6ffbcdf3}.option[_metadata_=on_board_mix].value[_metadata_=mix_driver]",
+      "field": "vr_is_default",
+      "value": "True"
+    }
+  ]
+}
