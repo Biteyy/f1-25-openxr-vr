@@ -8,31 +8,41 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
-#include <vector>
 
-#pragma comment(lib, "dxgi.lib")
-
-// The visor drawn over the window's copy. For each window pixel: its place in the eye image, its direction through the
-// eye's field of view (tangents), and so its place on the visor's plane, which spans +-span (tangent) across and up.
-static const char kVisorShaders[] = R"(
+// One full-window triangle: the eye band scaled to the window's frame, the visor over it. For each pixel: its place in
+// the eye image, its direction through the eye's field of view (tangents), and so its place on the visor's plane, which
+// spans +-span (tangent) across and up.
+static const char kShaders[] = R"(
 cbuffer Constants : register(b0) {
-	float eyeW, eyeH, bandTop, span;
+	float outW, outH, bandTop, bandSpan; // bandTop, bandSpan: the band's top and height as parts of the eye's height
 	float tanL, tanR, tanU, tanD;
+	float span, visorOn, encode, unused;
 };
-Texture2D visor : register(t0);
+Texture2D eye : register(t0);
+Texture2D visor : register(t1);
 SamplerState linearClamp : register(s0);
 float4 vs(uint id : SV_VertexID) : SV_Position {
 	float2 p = float2((id << 1) & 2, id & 2);
 	return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);
 }
 float4 ps(float4 pos : SV_Position) : SV_Target {
-	float u = pos.x / eyeW;
-	float v = (pos.y + bandTop) / eyeH;
-	float tx = tanL + u * (tanR - tanL);
-	float ty = tanU - v * (tanU - tanD);
-	return visor.Sample(linearClamp, float2(tx / span * 0.5 + 0.5, 0.5 - ty / span * 0.5));
+	float2 uv = pos.xy / float2(outW, outH);
+	float3 c = eye.SampleLevel(linearClamp, uv, 0).rgb;
+	if (encode > 0.5) {
+		c = saturate(c);
+		c = lerp(c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
+	}
+	if (visorOn > 0.5) {
+		float v = bandTop + uv.y * bandSpan;
+		float tx = tanL + uv.x * (tanR - tanL);
+		float ty = tanU - v * (tanU - tanD);
+		float4 z = visor.SampleLevel(linearClamp, float2(tx / span * 0.5 + 0.5, 0.5 - ty / span * 0.5), 0);
+		c = lerp(c, z.rgb, z.a); // the visor image has straight alpha
+	}
+	return float4(c, 1);
 }
 )";
 
@@ -53,6 +63,17 @@ LRESULT CALLBACK MirrorWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 {
 	auto* self = (MirrorWindow*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
 	switch (msg) {
+	case WM_PAINT:
+		if (self) {
+			self->Paint(hwnd);
+			return 0;
+		}
+		break;
+	case WM_ERASEBKGND:
+		return 1; // Paint covers the whole window
+	case WM_SIZE:
+		InvalidateRect(hwnd, nullptr, FALSE);
+		return 0;
 	case WM_CLOSE:
 		// The player closed it: keep it closed until the setting is switched off and on again
 		if (self)
@@ -73,6 +94,48 @@ LRESULT CALLBACK MirrorWindow::WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 	return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+void MirrorWindow::Paint(HWND window)
+{
+	PAINTSTRUCT ps;
+	HDC dc = BeginPaint(window, &ps);
+	RECT client;
+	GetClientRect(window, &client);
+	int cw = client.right, ch = client.bottom;
+
+	// The frame as large as fits, 16:9, black bars around it
+	int dw = cw, dh = cw * (int)kHeight / (int)kWidth;
+	if (dh > ch) {
+		dh = ch;
+		dw = ch * (int)kWidth / (int)kHeight;
+	}
+	int dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+	HBRUSH black = (HBRUSH)GetStockObject(BLACK_BRUSH);
+	RECT bars[4] = { { 0, 0, cw, dy }, { 0, dy + dh, cw, ch }, { 0, dy, dx, dy + dh }, { dx + dw, dy, cw, dy + dh } };
+	for (const RECT& r : bars)
+		if (r.right > r.left && r.bottom > r.top)
+			FillRect(dc, &r, black);
+
+	{
+		std::lock_guard<std::mutex> guard(frameMutex);
+		if (haveFrame && dw > 0 && dh > 0) {
+			BITMAPINFO info{};
+			info.bmiHeader.biSize = sizeof(info.bmiHeader);
+			info.bmiHeader.biWidth = (LONG)kWidth;
+			info.bmiHeader.biHeight = -(LONG)kHeight; // top-down
+			info.bmiHeader.biPlanes = 1;
+			info.bmiHeader.biBitCount = 32;
+			info.bmiHeader.biCompression = BI_RGB; // BGRA bytes, as the readback holds them
+			SetStretchBltMode(dc, HALFTONE);
+			SetBrushOrgEx(dc, 0, 0, nullptr);
+			StretchDIBits(dc, dx, dy, dw, dh, 0, 0, kWidth, kHeight, frame.data(), &info, DIB_RGB_COLORS, SRCCOPY);
+		} else {
+			RECT r{ dx, dy, dx + dw, dy + dh };
+			FillRect(dc, &r, black);
+		}
+	}
+	EndPaint(window, &ps);
+}
+
 bool MirrorWindow::OpenWindow()
 {
 	if (thread.joinable())
@@ -85,19 +148,21 @@ bool MirrorWindow::OpenWindow()
 		wc.lpfnWndProc = WindowProc;
 		wc.hInstance = instance;
 		wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW (the project builds without UNICODE)
-		wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+		wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1)); // the game's own icon, so share pickers show it
+		wc.hbrBackground = nullptr;
 		wc.lpszClassName = kClassName;
 		RegisterClassExW(&wc); // fails harmlessly when already registered
 
-		RECT rect{ 0, 0, 1280, 720 };
+		RECT rect{ 0, 0, (LONG)kWidth, (LONG)kHeight };
 		AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-		HWND window = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_APPWINDOW, kClassName, L"F1 25 - VR view", WS_OVERLAPPEDWINDOW,
+		// A plain top-level app window (no WS_EX_NOACTIVATE, which hides it from some share pickers); it is shown
+		// without activating and WM_MOUSEACTIVATE keeps clicks from taking focus
+		HWND window = CreateWindowExW(WS_EX_APPWINDOW, kClassName, L"F1 25 - VR view", WS_OVERLAPPEDWINDOW,
 		    CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, instance, nullptr);
 		if (window) {
 			SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)this);
 			ShowWindow(window, SW_SHOWNOACTIVATE);
 		}
-		threadId = GetCurrentThreadId();
 		hwnd = window;
 		SetEvent(ready);
 		if (!window)
@@ -120,10 +185,10 @@ bool MirrorWindow::OpenWindow()
 	return true;
 }
 
-void MirrorWindow::ReleaseChain()
+void MirrorWindow::ReleaseResources()
 {
 	if (fence && queue) {
-		// Let the copies in flight finish before their resources go
+		// Let the frames in flight finish before their resources go
 		queue->Signal(fence.Get(), nextFenceValue);
 		if (fence->GetCompletedValue() < nextFenceValue) {
 			HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -133,21 +198,18 @@ void MirrorWindow::ReleaseChain()
 		}
 		nextFenceValue++;
 	}
-	if (frameWait) {
-		CloseHandle(frameWait);
-		frameWait = nullptr;
-	}
-	chain.Reset();
+	for (Slot& s : slots)
+		s = Slot{};
 	list.Reset();
-	for (auto& a : allocators)
-		a.Reset();
-	fence.Reset();
-	queue.Reset();
-	visorPipeline.Reset();
-	visorRoot.Reset();
-	visorSrvHeap.Reset();
+	band.Reset();
+	target.Reset();
+	pipeline.Reset();
+	root.Reset();
+	srvHeap.Reset();
 	rtvHeap.Reset();
 	visorTexture.Reset();
+	fence.Reset();
+	queue.Reset();
 	visorGeneration = ~0u;
 	eyeWidth = 0;
 	eyeHeight = 0;
@@ -156,45 +218,45 @@ void MirrorWindow::ReleaseChain()
 
 void MirrorWindow::Close()
 {
-	ReleaseChain();
+	ReleaseResources();
 	if (thread.joinable()) {
 		if (HWND window = hwnd.load())
 			PostMessageW(window, WM_MIRROR_CLOSE, 0, 0);
 		thread.join();
 	}
 	hwnd = nullptr;
+	{
+		std::lock_guard<std::mutex> guard(frameMutex);
+		haveFrame = false;
+	}
 	closedByUser = false;
 	failed = false;
 	visorBroken = false;
 }
 
-bool MirrorWindow::MakeVisorPipeline(DXGI_FORMAT format)
+bool MirrorWindow::MakePipeline(ID3D12Device* device)
 {
-	ComPtr<ID3D12Device> device;
-	if (FAILED(queue->GetDevice(IID_PPV_ARGS(&device))))
-		return false;
-	auto fail = [this](const char* what, HRESULT hr) {
-		OOVR_LOGF("VR view window: %s failed (0x%08x), so it shows no visor", what, (unsigned)hr);
-		visorBroken = true;
-		return false;
-	};
 	HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
 	CompileFn compile = compiler ? (CompileFn)GetProcAddress(compiler, "D3DCompile") : nullptr;
 	HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
 	SerializeFn serialize = d3d12 ? (SerializeFn)GetProcAddress(d3d12, "D3D12SerializeRootSignature") : nullptr;
-	if (!compile || !serialize)
-		return fail("finding the shader compiler", E_FAIL);
+	if (!compile || !serialize) {
+		OOVR_LOG("VR view window: no shader compiler, so it stays empty");
+		return false;
+	}
 	ComPtr<ID3DBlob> vs, ps, errors, rs;
-	HRESULT hr = compile(kVisorShaders, sizeof(kVisorShaders) - 1, "visor", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &vs, &errors);
+	HRESULT hr = compile(kShaders, sizeof(kShaders) - 1, "mirror", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &vs, &errors);
 	if (SUCCEEDED(hr))
-		hr = compile(kVisorShaders, sizeof(kVisorShaders) - 1, "visor", nullptr, nullptr, "ps", "ps_5_0", 0, 0, &ps, &errors);
-	if (FAILED(hr))
-		return fail("compiling the visor shaders", hr);
+		hr = compile(kShaders, sizeof(kShaders) - 1, "mirror", nullptr, nullptr, "ps", "ps_5_0", 0, 0, &ps, &errors);
+	if (FAILED(hr)) {
+		OOVR_LOGF("VR view window: compiling the shaders failed (0x%08x): %s", (unsigned)hr, errors ? (const char*)errors->GetBufferPointer() : "");
+		return false;
+	}
 
-	D3D12_DESCRIPTOR_RANGE range{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
+	D3D12_DESCRIPTOR_RANGE range{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0 };
 	D3D12_ROOT_PARAMETER params[2] = {};
 	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-	params[0].Constants = { 0, 0, 8 };
+	params[0].Constants = { 0, 0, 12 };
 	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[1].DescriptorTable = { 1, &range };
@@ -205,38 +267,27 @@ bool MirrorWindow::MakeVisorPipeline(DXGI_FORMAT format)
 	sampler.MaxLOD = D3D12_FLOAT32_MAX;
 	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	D3D12_ROOT_SIGNATURE_DESC rsDesc{ 2, params, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE };
-	if (FAILED(hr = serialize(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rs, &errors)) || FAILED(hr = device->CreateRootSignature(0, rs->GetBufferPointer(), rs->GetBufferSize(), IID_PPV_ARGS(&visorRoot))))
-		return fail("making the visor root signature", hr);
+	if (FAILED(hr = serialize(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rs, &errors)) || FAILED(hr = device->CreateRootSignature(0, rs->GetBufferPointer(), rs->GetBufferSize(), IID_PPV_ARGS(&root)))) {
+		OOVR_LOGF("VR view window: making the root signature failed (0x%08x)", (unsigned)hr);
+		return false;
+	}
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
-	desc.pRootSignature = visorRoot.Get();
+	desc.pRootSignature = root.Get();
 	desc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
 	desc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
-	D3D12_RENDER_TARGET_BLEND_DESC& blend = desc.BlendState.RenderTarget[0];
-	blend.BlendEnable = TRUE;
-	blend.SrcBlend = D3D12_BLEND_SRC_ALPHA; // the visor image has straight alpha
-	blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-	blend.BlendOp = D3D12_BLEND_OP_ADD;
-	blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
-	blend.DestBlendAlpha = D3D12_BLEND_ONE;
-	blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN | D3D12_COLOR_WRITE_ENABLE_BLUE;
+	desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 	desc.SampleMask = UINT_MAX;
 	desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 	desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 	desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	desc.NumRenderTargets = 1;
-	desc.RTVFormats[0] = format;
+	desc.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
 	desc.SampleDesc.Count = 1;
-	if (FAILED(hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&visorPipeline))))
-		return fail("making the visor pipeline", hr);
-
-	D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
-	if (FAILED(hr = device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&visorSrvHeap))))
-		return fail("CreateDescriptorHeap", hr);
-	heap = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
-	if (FAILED(hr = device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtvHeap))))
-		return fail("CreateDescriptorHeap", hr);
+	if (FAILED(hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)))) {
+		OOVR_LOGF("VR view window: making the pipeline failed (0x%08x)", (unsigned)hr);
+		return false;
+	}
 	return true;
 }
 
@@ -252,7 +303,7 @@ bool MirrorWindow::UploadVisor(const Visor& visor)
 	desc.Height = visor.height;
 	desc.DepthOrArraySize = 1;
 	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // the window's buffer holds the game's (already encoded) colours
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // the frame holds the game's (already encoded) colours
 	desc.SampleDesc.Count = 1;
 	D3D12_HEAP_PROPERTIES defaultHeap{ D3D12_HEAP_TYPE_DEFAULT }, uploadHeap{ D3D12_HEAP_TYPE_UPLOAD };
 	ComPtr<ID3D12Resource> texture, upload;
@@ -309,20 +360,23 @@ bool MirrorWindow::UploadVisor(const Visor& visor)
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srv.Texture2D.MipLevels = 1;
-	device->CreateShaderResourceView(texture.Get(), &srv, visorSrvHeap->GetCPUDescriptorHandleForHeapStart());
+	D3D12_CPU_DESCRIPTOR_HANDLE slot = srvHeap->GetCPUDescriptorHandleForHeapStart();
+	slot.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	device->CreateShaderResourceView(texture.Get(), &srv, slot);
 	visorTexture = texture;
 	visorGeneration = visor.generation;
 	return true;
 }
 
-// The swapchain format that the eye texture can be copied into as it is: the same family, displayable
-static DXGI_FORMAT ChainFormatFor(DXGI_FORMAT eye)
+// The format the eye texture can be copied into as it is (the same family), and whether it holds linear light
+static DXGI_FORMAT BandFormatFor(DXGI_FORMAT eye, bool& linear)
 {
+	linear = false;
 	switch (eye) {
 	case DXGI_FORMAT_R8G8B8A8_TYPELESS:
 	case DXGI_FORMAT_R8G8B8A8_UNORM:
 	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-		return DXGI_FORMAT_R8G8B8A8_UNORM;
+		return DXGI_FORMAT_R8G8B8A8_UNORM; // read as the encoded bytes: the frame wants them encoded
 	case DXGI_FORMAT_B8G8R8A8_TYPELESS:
 	case DXGI_FORMAT_B8G8R8A8_UNORM:
 	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
@@ -332,82 +386,145 @@ static DXGI_FORMAT ChainFormatFor(DXGI_FORMAT eye)
 		return DXGI_FORMAT_R10G10B10A2_UNORM;
 	case DXGI_FORMAT_R16G16B16A16_TYPELESS:
 	case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		linear = true;
 		return DXGI_FORMAT_R16G16B16A16_FLOAT;
 	default:
 		return DXGI_FORMAT_UNKNOWN;
 	}
 }
 
-bool MirrorWindow::CreateChain(ID3D12CommandQueue* gameQueue, const D3D12_RESOURCE_DESC& eye)
+bool MirrorWindow::CreateResources(ID3D12CommandQueue* gameQueue, const D3D12_RESOURCE_DESC& eye)
 {
-	ReleaseChain();
+	ReleaseResources();
 
-	DXGI_FORMAT format = ChainFormatFor(eye.Format);
+	bool linear = false;
+	DXGI_FORMAT format = BandFormatFor(eye.Format, linear);
 	if (format == DXGI_FORMAT_UNKNOWN) {
 		OOVR_LOGF("VR view window: the game's eye format %d can't be shown, so it stays empty", eye.Format);
 		return false;
 	}
+	encodeSrgb = linear;
 
 	// The middle 16:9 band of the eye image (all of it if it's wider than that)
 	UINT width = (UINT)eye.Width;
 	UINT height = (std::min)(eye.Height, width * 9 / 16);
-	band = { 0, (eye.Height - height) / 2, 0, width, (eye.Height - height) / 2 + height, 1 };
+	bandBox = { 0, (eye.Height - height) / 2, 0, width, (eye.Height - height) / 2 + height, 1 };
 
 	ComPtr<ID3D12Device> device;
-	ComPtr<IDXGIFactory2> factory;
-	HRESULT hr;
+	HRESULT hr = S_OK;
 	const char* step = "";
-	DXGI_SWAP_CHAIN_DESC1 desc{};
-	desc.Width = width;
-	desc.Height = height;
-	desc.Format = format;
-	desc.SampleDesc.Count = 1;
-	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-	desc.BufferCount = kBuffers;
-	desc.Scaling = DXGI_SCALING_STRETCH;
-	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-	desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-	ComPtr<IDXGISwapChain1> chain1;
+	D3D12_HEAP_PROPERTIES defaultHeap{ D3D12_HEAP_TYPE_DEFAULT }, readbackHeap{ D3D12_HEAP_TYPE_READBACK };
+	D3D12_RESOURCE_DESC tex{};
+	tex.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	tex.DepthOrArraySize = 1;
+	tex.MipLevels = 1;
+	tex.SampleDesc.Count = 1;
+	D3D12_RESOURCE_DESC buf{};
+	buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	buf.Width = (UINT64)kRowPitch * kHeight;
+	buf.Height = buf.DepthOrArraySize = buf.MipLevels = 1;
+	buf.SampleDesc.Count = 1;
+	buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
 	if (FAILED(hr = gameQueue->GetDevice(IID_PPV_ARGS(&device))))
 		step = "GetDevice";
-	else if (FAILED(hr = CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))))
-		step = "CreateDXGIFactory2";
-	else if (FAILED(hr = factory->CreateSwapChainForHwnd(gameQueue, hwnd.load(), &desc, nullptr, nullptr, &chain1)))
-		step = "CreateSwapChainForHwnd";
-	else if (FAILED(hr = chain1.As(&chain)))
-		step = "IDXGISwapChain3";
 	else if (FAILED(hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
 		step = "CreateFence";
-	else {
-		factory->MakeWindowAssociation(hwnd.load(), DXGI_MWA_NO_ALT_ENTER);
-		chain->SetMaximumFrameLatency(1);
-		frameWait = chain->GetFrameLatencyWaitableObject();
-		for (auto& a : allocators) {
-			if (FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)))) {
-				step = "CreateCommandAllocator";
-				break;
-			}
-		}
-		if (!*step && FAILED(hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].Get(), nullptr, IID_PPV_ARGS(&list))))
-			step = "CreateCommandList";
-		if (!*step)
-			list->Close();
+	if (!*step) {
+		tex.Width = width;
+		tex.Height = height;
+		tex.Format = format;
+		if (FAILED(hr = device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &tex, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&band))))
+			step = "creating the band texture";
+	}
+	if (!*step) {
+		tex.Width = kWidth;
+		tex.Height = kHeight;
+		tex.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+		tex.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+		if (FAILED(hr = device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &tex, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&target))))
+			step = "creating the frame texture";
+	}
+	for (Slot& s : slots) {
+		if (*step)
+			break;
+		if (FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s.allocator))))
+			step = "CreateCommandAllocator";
+		else if (FAILED(hr = device->CreateCommittedResource(&readbackHeap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.readback))))
+			step = "creating a readback buffer";
+	}
+	if (!*step && FAILED(hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, slots[0].allocator.Get(), nullptr, IID_PPV_ARGS(&list))))
+		step = "CreateCommandList";
+	if (!*step) {
+		list->Close();
+		D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+		if (FAILED(hr = device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srvHeap))))
+			step = "CreateDescriptorHeap";
+		heap = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
+		if (!*step && FAILED(hr = device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtvHeap))))
+			step = "CreateDescriptorHeap";
+	}
+	if (!*step && !MakePipeline(device.Get())) {
+		step = "making the pipeline";
+		hr = E_FAIL;
 	}
 	if (*step) {
 		OOVR_LOGF("VR view window: %s failed (0x%08x), so it stays empty", step, (unsigned)hr);
-		ReleaseChain();
+		ReleaseResources();
 		return false;
 	}
+
+	// Views: the band at t0, no visor at t1 until one is uploaded; the frame's render target
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.Format = format;
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+	D3D12_CPU_DESCRIPTOR_HANDLE h = srvHeap->GetCPUDescriptorHandleForHeapStart();
+	device->CreateShaderResourceView(band.Get(), &srv, h);
+	h.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	device->CreateShaderResourceView(nullptr, &srv, h);
+	device->CreateRenderTargetView(target.Get(), nullptr, rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
 	queue = gameQueue;
 	eyeWidth = eye.Width;
 	eyeHeight = eye.Height;
 	eyeFormat = eye.Format;
-	for (auto& v : fenceValues)
-		v = 0;
-	OOVR_LOGF("VR view window: showing %ux%u of the %llux%u eye image (format %d)", width, height, (unsigned long long)eye.Width, eye.Height, eye.Format);
+	{
+		std::lock_guard<std::mutex> guard(frameMutex);
+		frame.assign((size_t)kRowPitch * kHeight, 0);
+	}
+	OOVR_LOGF("VR view window: showing %ux%u of the %llux%u eye image (format %d) at %ux%u", width, height, (unsigned long long)eye.Width, eye.Height, eye.Format, kWidth, kHeight);
 	return true;
+}
+
+void MirrorWindow::Harvest()
+{
+	Slot* newest = nullptr;
+	UINT64 done = fence->GetCompletedValue();
+	for (Slot& s : slots) {
+		if (s.pending && s.fenceValue <= done) {
+			s.pending = false;
+			if (!newest || s.fenceValue > newest->fenceValue)
+				newest = &s;
+		}
+	}
+	if (!newest)
+		return;
+	void* mapped = nullptr;
+	D3D12_RANGE read{ 0, (SIZE_T)kRowPitch * kHeight };
+	if (FAILED(newest->readback->Map(0, &read, &mapped)))
+		return;
+	{
+		std::lock_guard<std::mutex> guard(frameMutex);
+		memcpy(frame.data(), mapped, frame.size());
+		haveFrame = true;
+	}
+	D3D12_RANGE written{ 0, 0 };
+	newest->readback->Unmap(0, &written);
+	if (HWND window = hwnd.load())
+		InvalidateRect(window, nullptr, FALSE);
 }
 
 void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
@@ -416,7 +533,7 @@ void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
 		return;
 
 	if (!hwnd.load()) {
-		ReleaseChain(); // the old window's chain, if the window went
+		ReleaseResources(); // the old window's, if the window went
 		if (!OpenWindow()) {
 			failed = true;
 			return;
@@ -427,93 +544,93 @@ void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
 		return; // closing, or minimised: nothing to show
 
 	D3D12_RESOURCE_DESC desc = eye->m_pResource->GetDesc();
-	if (!chain || desc.Width != eyeWidth || desc.Height != eyeHeight || desc.Format != eyeFormat || queue.Get() != eye->m_pCommandQueue) {
-		if (!CreateChain(eye->m_pCommandQueue, desc)) {
+	if (!fence || desc.Width != eyeWidth || desc.Height != eyeHeight || desc.Format != eyeFormat || queue.Get() != eye->m_pCommandQueue) {
+		if (!CreateResources(eye->m_pCommandQueue, desc)) {
 			failed = true;
 			return;
 		}
 	}
 
-	// Skip the frame rather than wait: when the buffer's last copy hasn't finished, or the window can't take a frame
-	UINT index = chain->GetCurrentBackBufferIndex();
-	if (fence->GetCompletedValue() < fenceValues[index])
-		return;
-	if (WaitForSingleObject(frameWait, 0) != WAIT_OBJECT_0)
-		return;
+	Harvest();
 
-	ComPtr<ID3D12Resource> buffer;
-	if (FAILED(chain->GetBuffer(index, IID_PPV_ARGS(&buffer)))) {
-		chain->Present(0, 0); // gives back the frame-latency count just taken
+	// At most kMaxFps frames a second, and only into a free readback buffer: otherwise the frame is skipped
+	unsigned long long now = (unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (now - lastFrameTick < 1000000ull / kMaxFps - 1000)
 		return;
-	}
+	Slot* slot = nullptr;
+	for (Slot& s : slots)
+		if (!s.pending) {
+			slot = &s;
+			break;
+		}
+	if (!slot)
+		return;
+	lastFrameTick = now;
 
-	// The visor, when there is one: the pipeline is made for the window's format once, the image uploaded on change
 	bool drawVisor = visor.rgba && visor.width && !visorBroken;
-	if (drawVisor && !visorPipeline)
-		drawVisor = MakeVisorPipeline(ChainFormatFor(eyeFormat));
 	if (drawVisor && visor.generation != visorGeneration)
 		drawVisor = UploadVisor(visor);
 
-	allocators[index]->Reset();
-	list->Reset(allocators[index].Get(), nullptr);
-
-	D3D12_RESOURCE_BARRIER barrier{};
-	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	barrier.Transition.pResource = buffer.Get();
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-	list->ResourceBarrier(1, &barrier);
+	slot->allocator->Reset();
+	list->Reset(slot->allocator.Get(), pipeline.Get());
 
 	// The eye texture is read as the headset copy reads it (DX12Compositor::CopyToSwapchain): no barrier of its own
-	D3D12_TEXTURE_COPY_LOCATION dst{ buffer.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+	D3D12_TEXTURE_COPY_LOCATION dst{ band.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
 	dst.SubresourceIndex = 0;
 	D3D12_TEXTURE_COPY_LOCATION src{ eye->m_pResource, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
 	src.SubresourceIndex = 0;
-	list->CopyTextureRegion(&dst, 0, 0, 0, &src, &band);
+	list->CopyTextureRegion(&dst, 0, 0, 0, &src, &bandBox);
 
-	if (drawVisor) {
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		list->ResourceBarrier(1, &barrier);
-		ComPtr<ID3D12Device> device;
-		queue->GetDevice(IID_PPV_ARGS(&device));
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
-		device->CreateRenderTargetView(buffer.Get(), nullptr, rtv);
-		list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-		UINT w = band.right - band.left, h = band.bottom - band.top;
-		D3D12_VIEWPORT viewport{ 0, 0, (float)w, (float)h, 0, 1 };
-		D3D12_RECT scissor{ 0, 0, (LONG)w, (LONG)h };
-		list->RSSetViewports(1, &viewport);
-		list->RSSetScissorRects(1, &scissor);
-		list->SetPipelineState(visorPipeline.Get());
-		list->SetGraphicsRootSignature(visorRoot.Get());
-		ID3D12DescriptorHeap* heaps[] = { visorSrvHeap.Get() };
-		list->SetDescriptorHeaps(1, heaps);
-		list->SetGraphicsRootDescriptorTable(1, visorSrvHeap->GetGPUDescriptorHandleForHeapStart());
-		float span = std::tan(visor.halfAngleDeg * 3.14159265f / 180.0f);
-		float constants[8] = { (float)eyeWidth, (float)eyeHeight, (float)band.top, span, visor.tanLeft, visor.tanRight, visor.tanUp, visor.tanDown };
-		list->SetGraphicsRoot32BitConstants(0, 8, constants, 0);
-		list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		list->DrawInstanced(3, 1, 0, 0);
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-	} else {
-		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	}
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = band.Get();
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	list->ResourceBarrier(1, &barrier);
+
+	D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+	list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+	D3D12_VIEWPORT viewport{ 0, 0, (float)kWidth, (float)kHeight, 0, 1 };
+	D3D12_RECT scissor{ 0, 0, (LONG)kWidth, (LONG)kHeight };
+	list->RSSetViewports(1, &viewport);
+	list->RSSetScissorRects(1, &scissor);
+	list->SetGraphicsRootSignature(root.Get());
+	ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
+	list->SetDescriptorHeaps(1, heaps);
+	list->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
+	float span = std::tan(visor.halfAngleDeg * 3.14159265f / 180.0f);
+	float constants[12] = { (float)kWidth, (float)kHeight, (float)bandBox.top / (float)eyeHeight, (float)(bandBox.bottom - bandBox.top) / (float)eyeHeight,
+		visor.tanLeft, visor.tanRight, visor.tanUp, visor.tanDown, span, drawVisor ? 1.0f : 0.0f, encodeSrgb ? 1.0f : 0.0f, 0.0f };
+	list->SetGraphicsRoot32BitConstants(0, 12, constants, 0);
+	list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	list->DrawInstanced(3, 1, 0, 0);
+
+	D3D12_RESOURCE_BARRIER after[2] = { barrier, barrier };
+	after[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE; // the band, ready for the next copy
+	after[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+	after[1].Transition.pResource = target.Get();
+	after[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	after[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+	list->ResourceBarrier(2, after);
+
+	D3D12_TEXTURE_COPY_LOCATION rbDst{ slot->readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+	rbDst.PlacedFootprint.Offset = 0;
+	rbDst.PlacedFootprint.Footprint = { DXGI_FORMAT_B8G8R8A8_UNORM, kWidth, kHeight, 1, kRowPitch };
+	D3D12_TEXTURE_COPY_LOCATION rbSrc{ target.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+	rbSrc.SubresourceIndex = 0;
+	list->CopyTextureRegion(&rbDst, 0, 0, 0, &rbSrc, nullptr);
+
+	after[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+	after[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	list->ResourceBarrier(1, &after[1]);
 	list->Close();
 
 	ID3D12CommandList* lists[] = { list.Get() };
 	queue->ExecuteCommandLists(1, lists);
 	queue->Signal(fence.Get(), nextFenceValue);
-	fenceValues[index] = nextFenceValue++;
-
-	HRESULT hr = chain->Present(0, 0);
-	if (FAILED(hr)) {
-		OOVR_LOGF("VR view window: Present failed (0x%08x); it reopens on the next frame", (unsigned)hr);
-		ReleaseChain();
-	}
+	slot->fenceValue = nextFenceValue++;
+	slot->pending = true;
 }
 
 #endif

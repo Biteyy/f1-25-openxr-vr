@@ -14,8 +14,9 @@ const float kPi = 3.14159265f;
 const float kEyeUp = 0.7f;
 const float kEyeAhead = 0.0f;
 
-// Most mist puffs kept at once
+// Most mist puffs and visor drops kept at once
 const size_t kMaxMist = 6000;
+const size_t kMaxBeads = 220;
 
 // Cars further than this from the player throw no spray (it couldn't be seen)
 const float kSprayRange = 400.0f;
@@ -62,6 +63,7 @@ Sim::Sim()
     : rng(20261114u)
 {
 	mist.reserve(kMaxMist);
+	beads.reserve(kMaxBeads);
 }
 
 void Sim::Update(const Feed* feed, double seconds, float dt)
@@ -72,6 +74,7 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	static const float kSprayScales[4] = { 0.0f, 0.15f, 0.35f, 0.65f };
 	if (feed) {
 		sprayScale = kSprayScales[std::min(feed->spray, 3u)];
+		dropsOn = feed->drops != 0;
 		lastSteer = feed->steer;
 		if (feed->seq != lastSeq || carCount == 0) {
 			lastSeq = feed->seq;
@@ -173,6 +176,58 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	veil += (veilTarget - veil) * (1.0f - std::exp(-dt * 6.0f));
 	if (!haveFrame)
 		veil = std::max(0.0f, veil - dt);
+
+	// Drops on the visor (the game turns its own rain beads off in VR): rain on a wet track, many more inside another
+	// car's spray, more at speed
+	float hitRate = 0;
+	if (dropsOn && haveFrame)
+		hitRate = (wetness * 5.0f + veil * 90.0f) * (0.35f + std::min(playerSpeed / 50.0f, 1.3f));
+	UpdateBeads(dt, playerIndex >= 0 ? playerSpeed : 0.0f, hitRate);
+}
+
+void Sim::UpdateBeads(float dt, float speed, float hitRate)
+{
+	beadDebt += hitRate * dt;
+	while (beadDebt >= 1.0f) {
+		beadDebt -= 1.0f;
+		if (beads.size() >= kMaxBeads)
+			continue;
+		Bead b;
+		b.x = Random(-0.9f, 0.9f) * kVisorHalfSize;
+		b.y = Random(-0.7f, 0.9f) * kVisorHalfSize;
+		b.vx = b.vy = 0;
+		b.radius = Random(0.008f, 0.026f);
+		b.age = 0;
+		b.life = Random(4.0f, 9.0f);
+		b.stretch = 1;
+		b.angle = 0;
+		beads.push_back(b);
+	}
+	beadDebt = std::min(beadDebt, 3.0f);
+
+	// The airflow over the helmet pushes drops out to the edges and up at speed; slowly, big ones run down
+	float air = std::clamp((speed - 8.0f) / 50.0f, 0.0f, 1.4f);
+	for (size_t i = 0; i < beads.size();) {
+		Bead& b = beads[i];
+		b.age += dt * (1.0f + air * 1.5f);
+		float tx = b.x * 1.6f * air + Random(-0.02f, 0.02f) * air;
+		float ty = 0.35f * air - (b.radius > 0.018f ? 0.015f : 0.0f) * (1.0f - std::min(air, 1.0f));
+		float k = 1.0f - std::exp(-dt * 4.0f);
+		b.vx += (tx - b.vx) * k;
+		b.vy += (ty - b.vy) * k;
+		b.x += b.vx * dt;
+		b.y += b.vy * dt;
+		float moving = std::sqrt(b.vx * b.vx + b.vy * b.vy);
+		b.stretch = 1.0f + std::min(moving * 5.0f, 3.0f);
+		if (moving > 0.005f)
+			b.angle = std::atan2(-b.vx, b.vy);
+		if (b.age >= b.life || std::fabs(b.x) > kVisorHalfSize || std::fabs(b.y) > kVisorHalfSize) {
+			b = beads.back();
+			beads.pop_back();
+			continue;
+		}
+		i++;
+	}
 }
 
 void Sim::LearnFrame(const Car& player, float dt)
@@ -317,7 +372,13 @@ void Sim::Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const
 
 	if (veil > 0.002f)
 		drops.push_back({ {}, kVisorHalfSize, kVisorHalfSize, 0.0f, veil, kTileFlat });
-
+	for (const Bead& b : beads) {
+		// Landing: a quick splat, wider and stronger, that settles into a bead within a tenth of a second
+		float splat = std::exp(-b.age / 0.05f);
+		float alpha = std::min(1.0f, 0.85f + 0.4f * splat) * (1.0f - Smoothstep(b.life - 1.0f, b.life, b.age));
+		float r = b.radius * (1.0f + 0.7f * splat);
+		drops.push_back({ { b.x, b.y, 0.0f }, r, r * b.stretch, b.angle, alpha, kTileDrop });
+	}
 }
 
 } // namespace Rain

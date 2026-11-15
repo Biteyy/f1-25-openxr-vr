@@ -1,13 +1,15 @@
 #pragma once
 
 /**
- * Tyre spray for F1 25 in VR, which the game turns off there. (Drops on the view are the game's own rain beads.)
+ * Tyre spray and visor rain drops for F1 25 in VR, which draws neither: the game turns its spray off in VR, and
+ * rewrites its VR settings with its camera rain beads off.
  *
  * RainSim is the simulation, with no graphics or OpenXR in it: each frame it takes the cars from the Swofty addon
  * plugin (world position and velocity, tyres) and gives back sprites for RainDraw to draw:
  *   - spray: soft mist puffs thrown up behind each car's tyres on a wet track, in the VR tracking space (OpenXR:
  *     x right, y up, -z ahead, origin at the driver's eyes), plus a veil when the player drives through a cloud;
- *   - the veil: a haze over the whole view while the player drives through a cloud, on a head-locked plane.
+ *   - drops: the veil (a haze while the player drives through a cloud) and water drops on the visor, in metres on a
+ *     head-locked plane, blown about by the airflow at speed.
  *
  * The track's wetness is read from the tyres the field is on (wets, inters), since the game's weather isn't
  * available to the plugin. The world's up axis and handedness aren't documented either, so they are learned from
@@ -40,7 +42,7 @@ struct Feed {
 	uint64_t seq; // the live snapshot's counter: changes every game frame
 	float steer; // the player's steering, -1 (left) to 1 (right)
 	uint32_t spray; // setting: 0 off, 1 light, 2 normal, 3 heavy
-	uint32_t reserved; // was the visor drops setting (the game's own rain beads are used now)
+	uint32_t drops; // setting: visor drops on
 	float trackLength; // metres, or 0 when unknown
 	Car cars[kMaxCars];
 };
@@ -75,11 +77,11 @@ public:
 	 */
 	void Update(const Feed* feed, double seconds, float dt);
 
-	/** Builds this frame's sprites: spray in the tracking space, the veil on the head-locked plane */
+	/** Builds this frame's sprites: spray in the tracking space, the veil and drops on the head-locked plane */
 	void Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const;
 
 	/** Whether anything would be drawn */
-	bool Active() const { return !mist.empty() || veil > 0.002f; }
+	bool Active() const { return !mist.empty() || !beads.empty() || veil > 0.002f; }
 
 	/** Track wetness 0..1, for the log */
 	float Wetness() const { return wetness; }
@@ -90,16 +92,23 @@ private:
 		float age, life, size0, size1, spin, angle, alpha;
 		float lap; // where round the lap it was thrown up (-1 unknown)
 	};
+	struct Bead {
+		float x, y; // visor plane, metres
+		float vx, vy;
+		float radius, age, life, stretch, angle;
+	};
 
 	void LearnFrame(const Car& player, float dt);
 	Vec3 ToTracking(const Vec3& world) const;
 	bool OnPlayersStretch(float lap, float straightDistance) const;
 	void Emit(const Car& car, float dt);
+	void UpdateBeads(float dt, float playerSpeed, float hitRate);
 
 	std::mt19937 rng;
 	float Random(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
 
 	std::vector<Mist> mist;
+	std::vector<Bead> beads;
 
 	// The feed's cars, moved on to now by their velocity (the snapshot can be a frame old)
 	Car cars[kMaxCars] = {};
@@ -124,10 +133,12 @@ private:
 	float wetness = 0; // 0..1, follows the field's tyres slowly
 	bool haveWetness = false;
 	float sprayScale = 1.0f; // setting
+	bool dropsOn = true; // setting
 	float veil = 0; // alpha of the cloud the player is in
 	float playerSpeed = 0;
 	float playerLap = -1, trackLength = 0;
 	float emitDebt[kMaxCars][4] = {};
+	float beadDebt = 0;
 };
 
 } // namespace Rain
