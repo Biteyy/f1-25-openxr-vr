@@ -16,7 +16,7 @@ const float kEyeAhead = 0.0f;
 
 // Most mist puffs and visor drops kept at once
 const size_t kMaxMist = 6000;
-const size_t kMaxBeads = 220;
+const size_t kMaxBeads = 450;
 
 // Cars further than this from the player throw no spray (it couldn't be seen)
 const float kSprayRange = 400.0f;
@@ -181,7 +181,7 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	// car's spray, more at speed
 	float hitRate = 0;
 	if (dropsOn && haveFrame)
-		hitRate = (wetness * 8.0f + veil * 90.0f) * (0.35f + std::min(playerSpeed / 50.0f, 1.3f));
+		hitRate = (wetness * 22.0f + veil * 140.0f) * (0.35f + std::min(playerSpeed / 50.0f, 1.3f));
 	UpdateBeads(dt, playerIndex >= 0 ? playerSpeed : 0.0f, hitRate);
 	UpdateVisor(feed, dt);
 }
@@ -323,7 +323,7 @@ void Sim::UpdateVisor(const Feed* feed, float dt)
 	float moving = Smoothstep(8.0f, 40.0f, speed);
 	float dry = 1.0f - 0.7f * wetness;
 	dirt = std::min(1.0f, dirt + dt * moving * dry * (1.0f / 900.0f + behind * (1.0f / 90.0f)));
-	grime = std::min(1.0f, grime + dt * (veil * 0.06f + wetness * moving * 0.002f + behind * wetness * 0.01f));
+	grime = std::min(1.0f, grime + dt * (veil * 0.1f + wetness * moving * 0.005f + behind * wetness * 0.02f));
 
 	// Misting: a wet day, slow (the pit lane, behind the safety car), clears with the airflow
 	float fogTarget = wetness > 0.2f ? 0.35f * wetness * (1.0f - Smoothstep(5.0f, 17.0f, speed)) : 0.0f;

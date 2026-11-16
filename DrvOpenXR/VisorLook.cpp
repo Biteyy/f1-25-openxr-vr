@@ -27,6 +27,12 @@ const Named kNamed[] = {
 	{ "iridium_blue", { { 0.56f, 0.50f, 0.38f } } },
 	{ "iridium_gold", { { 0.40f, 0.47f, 0.56f } } },
 	{ "iridium_red", { { 0.36f, 0.50f, 0.53f } } },
+	{ "amber", { { 0.90f, 0.62f, 0.22f } } }, // a deeper yellow: strong contrast, warm
+	{ "rose", { { 0.82f, 0.55f, 0.58f } } },
+	{ "blue", { { 0.45f, 0.58f, 0.85f } } },
+	{ "iridium_silver", { { 0.30f, 0.30f, 0.31f } } }, // a mirror: dark and neutral
+	{ "iridium_green", { { 0.52f, 0.38f, 0.48f } } },
+	{ "iridium_purple", { { 0.44f, 0.52f, 0.36f } } },
 };
 
 float ToLinear(float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); }
