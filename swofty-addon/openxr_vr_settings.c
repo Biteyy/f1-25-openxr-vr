@@ -40,44 +40,101 @@ uint32_t tear_off_pulls(void);
 
 /* ---- VR graphics presets ----------------------------------------------------------------------------------------
  * Whole elements of hardware_settings_config_vr.xml, as the game itself writes them. "performance" is the low set
- * the game wrote on 2026-11-10 for a Quest 3 on an RTX 4060 Ti; "quality" is its high set. Only detail settings:
- * resolution, anti-aliasing, dynamic resolution, textures and the headset are left to the game's own menus. */
+ * the game wrote on 2026-11-10 for a Quest 3 on an RTX 4060 Ti; "quality" is its high set. "medium" and "high" turn
+ * DLSS on (Quality, aa_quality 0) with TAA (F1 games need TAA on under DLSS, else it renders below its quality level:
+ * blurry and pixelated, seen here on 2026-11-10), variable rate shading on, dynamic resolution off (it fights DLSS)
+ * and a 2 GB texture budget, and keep what shows in VR (shadows, lighting, reflections, particles, grass) while
+ * leaving out what costs most for least (screen-space ray tracing, lens effects, depth of field, hair). NULL: that
+ * preset leaves the element as it is. Resolution and the headset stay with the game's own menus. */
+enum { PRESET_PERFORMANCE, PRESET_MEDIUM, PRESET_HIGH, PRESET_QUALITY, PRESETS };
+static const char* const preset_names[PRESETS] = { "performance", "medium", "high", "quality" };
+
 typedef struct {
 	const char* tag; // "<tag " as it opens the element
-	const char* performance;
-	const char* quality;
+	const char* preset[PRESETS];
 } Element;
 
 static const Element elements[] = {
-	{ "<ssao ", "<ssao enabled=\"false\" algorithm=\"0\" />", "<ssao enabled=\"true\" algorithm=\"1\" />" },
-	{ "<ssrt ", "<ssrt enabled=\"false\" quality=\"0\" />", "<ssrt enabled=\"true\" quality=\"3\" />" },
-	{ "<anisotropic_filter ", "<anisotropic_filter level=\"4\" />", "<anisotropic_filter level=\"8\" />" },
+	{ "<ssao ",
+	    { "<ssao enabled=\"false\" algorithm=\"0\" />",
+	        "<ssao enabled=\"true\" algorithm=\"0\" />",
+	        "<ssao enabled=\"true\" algorithm=\"1\" />",
+	        "<ssao enabled=\"true\" algorithm=\"1\" />" } },
+	{ "<ssrt ",
+	    { "<ssrt enabled=\"false\" quality=\"0\" />",
+	        "<ssrt enabled=\"false\" quality=\"0\" />",
+	        "<ssrt enabled=\"false\" quality=\"0\" />",
+	        "<ssrt enabled=\"true\" quality=\"3\" />" } },
+	{ "<anisotropic_filter ",
+	    { "<anisotropic_filter level=\"4\" />",
+	        "<anisotropic_filter level=\"16\" />",
+	        "<anisotropic_filter level=\"16\" />",
+	        "<anisotropic_filter level=\"8\" />" } },
 	{ "<lighting ",
-	    "<lighting quality=\"0\" volumetricFog=\"false\" volumetricFogMapWidth=\"256\" volumetricFogMapHeight=\"128\" />",
-	    "<lighting quality=\"3\" volumetricFog=\"true\" volumetricFogMapWidth=\"1920\" volumetricFogMapHeight=\"1080\" />" },
+	    { "<lighting quality=\"0\" volumetricFog=\"false\" volumetricFogMapWidth=\"256\" volumetricFogMapHeight=\"128\" />",
+	        "<lighting quality=\"1\" volumetricFog=\"true\" volumetricFogMapWidth=\"512\" volumetricFogMapHeight=\"256\" />",
+	        "<lighting quality=\"2\" volumetricFog=\"true\" volumetricFogMapWidth=\"1024\" volumetricFogMapHeight=\"512\" />",
+	        "<lighting quality=\"3\" volumetricFog=\"true\" volumetricFogMapWidth=\"1920\" volumetricFogMapHeight=\"1080\" />" } },
 	{ "<postprocess ",
-	    "<postprocess motionBlur=\"false\" godRays=\"false\" depthOfField=\"false\" lensStreak=\"false\" lensFlare=\"false\" bloom=\"false\" motionBlurV2=\"false\" />",
-	    "<postprocess motionBlur=\"false\" godRays=\"false\" depthOfField=\"true\" lensStreak=\"true\" lensFlare=\"true\" bloom=\"false\" motionBlurV2=\"false\" />" },
+	    { "<postprocess motionBlur=\"false\" godRays=\"false\" depthOfField=\"false\" lensStreak=\"false\" lensFlare=\"false\" bloom=\"false\" motionBlurV2=\"false\" />",
+	        "<postprocess motionBlur=\"false\" godRays=\"false\" depthOfField=\"false\" lensStreak=\"false\" lensFlare=\"false\" bloom=\"true\" motionBlurV2=\"false\" />",
+	        "<postprocess motionBlur=\"false\" godRays=\"true\" depthOfField=\"false\" lensStreak=\"false\" lensFlare=\"false\" bloom=\"true\" motionBlurV2=\"false\" />",
+	        "<postprocess motionBlur=\"false\" godRays=\"false\" depthOfField=\"true\" lensStreak=\"true\" lensFlare=\"true\" bloom=\"false\" motionBlurV2=\"false\" />" } },
 	{ "<shadows ",
-	    "<shadows enabled=\"true\" skyShadowMapSize=\"512\" skyShadowCascadeCount=\"2\" skyShadowLowLod=\"true\" worldShadowMapSize=\"512\" skyShadowMap32Bits=\"false\" nightShadowMapSize=\"512\" nightShadowCharacterCast=\"false\" nightShadowSourceCount=\"1\" sampling=\"0\" spotShadowMapSize=\"512\" spotShadowSampling=\"0\" crowdInShadows=\"false\" />",
-	    "<shadows enabled=\"true\" skyShadowMapSize=\"2048\" skyShadowCascadeCount=\"4\" skyShadowLowLod=\"false\" worldShadowMapSize=\"4096\" skyShadowMap32Bits=\"true\" nightShadowMapSize=\"4096\" nightShadowCharacterCast=\"true\" nightShadowSourceCount=\"4\" sampling=\"2\" spotShadowMapSize=\"2048\" spotShadowSampling=\"2\" crowdInShadows=\"true\" />" },
-	{ "<particles ", "<particles enabled=\"true\" distanceScale=\"0.25\" rate=\"0.25\" high=\"false\" />",
-	    "<particles enabled=\"true\" distanceScale=\"1.0\" rate=\"1.0\" high=\"true\" />" },
-	{ "<crowd ", "<crowd distanceScale=\"0.25\" billboardDistance=\"250\" />", "<crowd distanceScale=\"0.4\" billboardDistance=\"3000\" />" },
+	    { "<shadows enabled=\"true\" skyShadowMapSize=\"512\" skyShadowCascadeCount=\"2\" skyShadowLowLod=\"true\" worldShadowMapSize=\"512\" skyShadowMap32Bits=\"false\" nightShadowMapSize=\"512\" nightShadowCharacterCast=\"false\" nightShadowSourceCount=\"1\" sampling=\"0\" spotShadowMapSize=\"512\" spotShadowSampling=\"0\" crowdInShadows=\"false\" />",
+	        "<shadows enabled=\"true\" skyShadowMapSize=\"1024\" skyShadowCascadeCount=\"3\" skyShadowLowLod=\"true\" worldShadowMapSize=\"2048\" skyShadowMap32Bits=\"false\" nightShadowMapSize=\"2048\" nightShadowCharacterCast=\"false\" nightShadowSourceCount=\"2\" sampling=\"1\" spotShadowMapSize=\"1024\" spotShadowSampling=\"1\" crowdInShadows=\"false\" />",
+	        "<shadows enabled=\"true\" skyShadowMapSize=\"2048\" skyShadowCascadeCount=\"4\" skyShadowLowLod=\"false\" worldShadowMapSize=\"2048\" skyShadowMap32Bits=\"false\" nightShadowMapSize=\"2048\" nightShadowCharacterCast=\"true\" nightShadowSourceCount=\"2\" sampling=\"1\" spotShadowMapSize=\"1024\" spotShadowSampling=\"1\" crowdInShadows=\"false\" />",
+	        "<shadows enabled=\"true\" skyShadowMapSize=\"2048\" skyShadowCascadeCount=\"4\" skyShadowLowLod=\"false\" worldShadowMapSize=\"4096\" skyShadowMap32Bits=\"true\" nightShadowMapSize=\"4096\" nightShadowCharacterCast=\"true\" nightShadowSourceCount=\"4\" sampling=\"2\" spotShadowMapSize=\"2048\" spotShadowSampling=\"2\" crowdInShadows=\"true\" />" } },
+	{ "<particles ",
+	    { "<particles enabled=\"true\" distanceScale=\"0.25\" rate=\"0.25\" high=\"false\" />",
+	        "<particles enabled=\"true\" distanceScale=\"0.5\" rate=\"0.5\" high=\"false\" />",
+	        "<particles enabled=\"true\" distanceScale=\"1.0\" rate=\"0.75\" high=\"true\" />",
+	        "<particles enabled=\"true\" distanceScale=\"1.0\" rate=\"1.0\" high=\"true\" />" } },
+	{ "<crowd ",
+	    { "<crowd distanceScale=\"0.25\" billboardDistance=\"250\" />",
+	        "<crowd distanceScale=\"0.3\" billboardDistance=\"1000\" />",
+	        "<crowd distanceScale=\"0.4\" billboardDistance=\"2000\" />",
+	        "<crowd distanceScale=\"0.4\" billboardDistance=\"3000\" />" } },
 	{ "<vehicle_reflections ",
-	    "<vehicle_reflections envMapScale=\"0.25\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"cars\" cubeMapEnabled=\"false\" cubeMapScale=\"0.25\" cubeMapUpdateMode=\"oneFacePerFrame\" />",
-	    "<vehicle_reflections envMapScale=\"2.0\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"carsAndCharacters\" cubeMapEnabled=\"true\" cubeMapScale=\"1.0\" cubeMapUpdateMode=\"oddsThenEvens\" />" },
+	    { "<vehicle_reflections envMapScale=\"0.25\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"cars\" cubeMapEnabled=\"false\" cubeMapScale=\"0.25\" cubeMapUpdateMode=\"oneFacePerFrame\" />",
+	        "<vehicle_reflections envMapScale=\"0.5\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"cars\" cubeMapEnabled=\"true\" cubeMapScale=\"0.5\" cubeMapUpdateMode=\"oneFacePerFrame\" />",
+	        "<vehicle_reflections envMapScale=\"1.0\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"cars\" cubeMapEnabled=\"true\" cubeMapScale=\"0.5\" cubeMapUpdateMode=\"oneFacePerFrame\" />",
+	        "<vehicle_reflections envMapScale=\"2.0\" envMapUpdateMode=\"alternate\" envMapRenderMode=\"carsAndCharacters\" cubeMapEnabled=\"true\" cubeMapScale=\"1.0\" cubeMapUpdateMode=\"oddsThenEvens\" />" } },
 	{ "<mirrors ",
-	    "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"cars\" treesInMirrors=\"false\" crowdInMirrors=\"false\" highDetailMirrors=\"false\" highDetailTyresAndCar=\"false\" particlesInMirrors=\"false\" />",
-	    "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"carsAndCharacters\" treesInMirrors=\"true\" crowdInMirrors=\"true\" highDetailMirrors=\"true\" highDetailTyresAndCar=\"true\" particlesInMirrors=\"true\" />" },
+	    { "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"cars\" treesInMirrors=\"false\" crowdInMirrors=\"false\" highDetailMirrors=\"false\" highDetailTyresAndCar=\"false\" particlesInMirrors=\"false\" />",
+	        "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"cars\" treesInMirrors=\"true\" crowdInMirrors=\"false\" highDetailMirrors=\"false\" highDetailTyresAndCar=\"false\" particlesInMirrors=\"false\" />",
+	        "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"carsAndCharacters\" treesInMirrors=\"true\" crowdInMirrors=\"false\" highDetailMirrors=\"true\" highDetailTyresAndCar=\"false\" particlesInMirrors=\"false\" />",
+	        "<mirrors mirrorsUpdateMode=\"alternate\" mirrorsRenderMode=\"carsAndCharacters\" treesInMirrors=\"true\" crowdInMirrors=\"true\" highDetailMirrors=\"true\" highDetailTyresAndCar=\"true\" particlesInMirrors=\"true\" />" } },
 	{ "<weather_effects ",
-	    "<weather_effects rainSplashes=\"true\" rainSheets=\"false\" rainBeads=\"false\" rainHigh=\"false\" trackHeatHaze=\"false\" planarReflectionsEnabled=\"false\" planarReflectionsHQEnabled=\"false\" planarReflectionsRangeScale=\"0.5\" planarReflectionsRTScale=\"0.25\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"0.5\" proceduralCloudTiling=\"4\" proceduralCloudQuality=\"0\" />",
-	    "<weather_effects rainSplashes=\"true\" rainSheets=\"true\" rainBeads=\"true\" rainHigh=\"true\" trackHeatHaze=\"true\" planarReflectionsEnabled=\"true\" planarReflectionsHQEnabled=\"true\" planarReflectionsRangeScale=\"3.0\" planarReflectionsRTScale=\"1.0\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"4.0\" proceduralCloudTiling=\"7\" proceduralCloudQuality=\"1\" />" },
-	{ "<ground_cover ", "<ground_cover enabled=\"false\" grassFlattening=\"false\" drawDistance=\"30.0\" meshes=\"false\" />",
-	    "<ground_cover enabled=\"true\" grassFlattening=\"true\" drawDistance=\"120.0\" meshes=\"true\" />" },
-	{ "<trees ", "<trees useLOD0=\"false\" distanceScale=\"0.5\" />", "<trees useLOD0=\"true\" distanceScale=\"0.2\" />" },
-	{ "<hair ", "<hair enabled=\"false\" />", "<hair enabled=\"true\" />" },
-	{ "<skidmarks ", "<skidmarks enabled=\"true\" parallax=\"false\" />", "<skidmarks enabled=\"true\" parallax=\"true\" />" },
+	    { "<weather_effects rainSplashes=\"true\" rainSheets=\"false\" rainBeads=\"false\" rainHigh=\"false\" trackHeatHaze=\"false\" planarReflectionsEnabled=\"false\" planarReflectionsHQEnabled=\"false\" planarReflectionsRangeScale=\"0.5\" planarReflectionsRTScale=\"0.25\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"0.5\" proceduralCloudTiling=\"4\" proceduralCloudQuality=\"0\" />",
+	        "<weather_effects rainSplashes=\"true\" rainSheets=\"true\" rainBeads=\"false\" rainHigh=\"false\" trackHeatHaze=\"false\" planarReflectionsEnabled=\"true\" planarReflectionsHQEnabled=\"false\" planarReflectionsRangeScale=\"1.0\" planarReflectionsRTScale=\"0.5\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"1.0\" proceduralCloudTiling=\"7\" proceduralCloudQuality=\"0\" />",
+	        "<weather_effects rainSplashes=\"true\" rainSheets=\"true\" rainBeads=\"false\" rainHigh=\"true\" trackHeatHaze=\"true\" planarReflectionsEnabled=\"true\" planarReflectionsHQEnabled=\"false\" planarReflectionsRangeScale=\"2.0\" planarReflectionsRTScale=\"0.5\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"2.0\" proceduralCloudTiling=\"7\" proceduralCloudQuality=\"1\" />",
+	        "<weather_effects rainSplashes=\"true\" rainSheets=\"true\" rainBeads=\"true\" rainHigh=\"true\" trackHeatHaze=\"true\" planarReflectionsEnabled=\"true\" planarReflectionsHQEnabled=\"true\" planarReflectionsRangeScale=\"3.0\" planarReflectionsRTScale=\"1.0\" planarReflectionsMipTailBlur=\"true\" proceduralCloudRTScale=\"4.0\" proceduralCloudTiling=\"7\" proceduralCloudQuality=\"1\" />" } },
+	{ "<ground_cover ",
+	    { "<ground_cover enabled=\"false\" grassFlattening=\"false\" drawDistance=\"30.0\" meshes=\"false\" />",
+	        "<ground_cover enabled=\"true\" grassFlattening=\"false\" drawDistance=\"60.0\" meshes=\"false\" />",
+	        "<ground_cover enabled=\"true\" grassFlattening=\"true\" drawDistance=\"90.0\" meshes=\"true\" />",
+	        "<ground_cover enabled=\"true\" grassFlattening=\"true\" drawDistance=\"120.0\" meshes=\"true\" />" } },
+	{ "<trees ",
+	    { "<trees useLOD0=\"false\" distanceScale=\"0.5\" />",
+	        "<trees useLOD0=\"false\" distanceScale=\"0.35\" />",
+	        "<trees useLOD0=\"false\" distanceScale=\"0.3\" />",
+	        "<trees useLOD0=\"true\" distanceScale=\"0.2\" />" } },
+	{ "<hair ",
+	    { "<hair enabled=\"false\" />",
+	        "<hair enabled=\"false\" />",
+	        "<hair enabled=\"false\" />",
+	        "<hair enabled=\"true\" />" } },
+	{ "<skidmarks ",
+	    { "<skidmarks enabled=\"true\" parallax=\"false\" />",
+	        "<skidmarks enabled=\"true\" parallax=\"false\" />",
+	        "<skidmarks enabled=\"true\" parallax=\"true\" />",
+	        "<skidmarks enabled=\"true\" parallax=\"true\" />" } },
+	{ "<antialiasing ", { NULL, "<antialiasing taa=\"true\" cas=\"0\" dlss=\"true\" fsr3=\"0\" xess=\"false\" />", "<antialiasing taa=\"true\" cas=\"0\" dlss=\"true\" fsr3=\"0\" xess=\"false\" />", NULL } },
+	{ "<aa_quality ", { NULL, "<aa_quality value=\"0\" />", "<aa_quality value=\"0\" />", NULL } },
+	{ "<vrs ", { NULL, "<vrs enabled=\"true\" />", "<vrs enabled=\"true\" />", NULL } },
+	{ "<dynamicresolution_enabled ", { NULL, "<dynamicresolution_enabled value=\"false\" />", "<dynamicresolution_enabled value=\"false\" />", NULL } },
+	{ "<texture_streaming ", { NULL, "<texture_streaming sizeInMiB=\"2048\" texelDensityBias=\"0.0\" concurrentTextureSwaps=\"1\" />", "<texture_streaming sizeInMiB=\"2048\" texelDensityBias=\"0.0\" concurrentTextureSwaps=\"1\" />", NULL } },
 };
 
 /* The game's VR graphics file, or 0 if the Documents folder can't be found */
@@ -111,11 +168,14 @@ static char* read_file(const wchar_t* path, size_t* size)
 	return data;
 }
 
-/* Rewrites the file's detail elements with the preset's ("performance" or "quality"); anything else leaves it be. */
+/* Rewrites the file's elements with the preset's (performance, medium, high, quality); anything else leaves it be. */
 static void apply_graphics(const char* preset)
 {
-	int quality = strcmp(preset, "quality") == 0;
-	if (!quality && strcmp(preset, "performance") != 0)
+	int which = -1;
+	for (int i = 0; i < PRESETS; i++)
+		if (strcmp(preset, preset_names[i]) == 0)
+			which = i;
+	if (which < 0)
 		return;
 
 	wchar_t path[MAX_PATH], backup[MAX_PATH], temp[MAX_PATH];
@@ -153,19 +213,21 @@ static void apply_graphics(const char* preset)
 	for (;;) {
 		// The next element to replace, in file order
 		const char* next = NULL;
-		const Element* which = NULL;
+		const Element* element = NULL;
 		for (size_t i = 0; i < sizeof(elements) / sizeof(elements[0]); i++) {
+			if (!elements[i].preset[which])
+				continue;
 			const char* p = strstr(at, elements[i].tag);
 			if (p && (!next || p < next)) {
 				next = p;
-				which = &elements[i];
+				element = &elements[i];
 			}
 		}
 		const char* end = next ? strstr(next, "/>") : NULL;
 		if (!end)
 			break;
 		end += 2;
-		const char* text = quality ? which->quality : which->performance;
+		const char* text = element->preset[which];
 		size_t keep = (size_t)(next - at), add = strlen(text);
 		if (len + keep + add >= cap)
 			break; // can't happen for a file the game wrote; leave the rest as it is
