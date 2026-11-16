@@ -41,7 +41,7 @@ cbuffer C : register(b0) {
 	float4 pull;   // a tear-off being pulled (0/1), how far it has slid (metres), its dirt, its grime
 	float4 spray;  // this eye's spray in the layers: u offset, u scale, v scale; the pulled tear-off's seed
 	float4 water;  // the drops in the layers: u offset, u scale, v scale; time
-	float4 misc;   // output width, height; speed (m/s); unused
+	float4 misc;   // output width, height; speed (m/s); photochromic
 };
 Texture2D scene : register(t0);
 Texture2D layers : register(t1);
@@ -169,6 +169,9 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
 	if (plane.w > 0.5) {
 		float4 m = visorMap.SampleLevel(lin, float2(t.x / plane.z * 0.5 + 0.5, 0.5 - t.y / plane.z * 0.5), 0);
 		c *= m.rgb;
+		// A photochromic visor darkens with the light: clear at dusk and in tunnels, about a dark smoke in sun
+		if (misc.w > 0.5)
+			c *= lerp(0.92, 0.36, smoothstep(0.12, 0.55, dot(sky, 1.0 / 3.0)));
 		float lining = 0.010 + 0.06 * m.a * (1 - m.a) * dot(sky, 0.33);
 		c = lerp(c, lining.xxx, m.a);
 	}
@@ -447,6 +450,7 @@ bool VisorPass::MakeTargets(const D3D12_RESOURCE_DESC& src, DXGI_FORMAT format)
 bool VisorPass::UploadVisor(ID3D12CommandQueue* queue, const std::string& id)
 {
 	visorOn = false;
+	visorPhotochromic = false;
 	VisorLook::Visor look;
 	if (id == "off")
 		return true;
@@ -523,6 +527,7 @@ bool VisorPass::UploadVisor(ID3D12CommandQueue* queue, const std::string& id)
 		device->CreateShaderResourceView(visorMap.Get(), &srv, h);
 	}
 	visorOn = true;
+	visorPhotochromic = look.photochromic;
 	VISOR_LOG("Visor pass: visor %s (lets through %.2f %.2f %.2f)", id.c_str(), look.transmission[0], look.transmission[1], look.transmission[2]);
 	return true;
 }
@@ -661,7 +666,7 @@ bool VisorPass::Draw(int eye, ID3D12CommandQueue* queue, ID3D12Resource* src, ID
 		st.peel > 0 ? 1.0f : 0.0f, pullShift, st.oldDirt, st.oldGrime,
 		(float)(eye * sprayWidth) / layersWidth, (float)sprayWidth / layersWidth, (float)sprayHeight / layersHeight, st.oldSeed,
 		(float)(2 * sprayWidth) / layersWidth, (float)kWaterSize / layersWidth, (float)kWaterSize / layersHeight, time,
-		(float)eyeWidth, (float)eyeHeight, st.speed, 0.0f,
+		(float)eyeWidth, (float)eyeHeight, st.speed, visorPhotochromic ? 1.0f : 0.0f,
 	};
 	list->SetGraphicsRoot32BitConstants(0, kConstants, c, 0);
 	list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

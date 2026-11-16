@@ -23,7 +23,8 @@
 static const SwoftyApi* swofty;
 
 static SRWLOCK lock = SRWLOCK_INIT;
-static char visor[64] = "clear";
+static char visor[64] = "clear"; // the visor type
+static char visor_colour[32] = "blue"; // its colour, for the tinted and iridium types
 static unsigned int generation = 1; // bumped on every visor change, so the reader only reloads when it moves
 static float render_scale = 0.0f; // per axis; 0: opencomposite.ini's
 static int view_window = 0; // the VR view window for screen sharing
@@ -405,6 +406,22 @@ static void store_visor(const char* value)
 	ReleaseSRWLockExclusive(&lock);
 }
 
+static void store_visor_colour(const char* value)
+{
+	AcquireSRWLockExclusive(&lock);
+	if (value && strcmp(value, visor_colour) != 0) {
+		strncpy_s(visor_colour, sizeof(visor_colour), value, _TRUNCATE);
+		generation++;
+	}
+	ReleaseSRWLockExclusive(&lock);
+}
+
+/* Whether the visor type takes the colour setting */
+static int coloured(const char* type)
+{
+	return strcmp(type, "tinted") == 0 || strcmp(type, "iridium") == 0 || strcmp(type, "iridium_dark") == 0;
+}
+
 static void store_render_scale(const char* value)
 {
 	// "default" (opencomposite.ini) or a percentage of the headset's recommended size per axis, eg "120"
@@ -451,6 +468,8 @@ static void on_change(const char* id, const SwoftySettingValue* value, void* use
 		return;
 	if (strcmp(id, "visor") == 0)
 		store_visor(value->choice);
+	else if (strcmp(id, "visor_colour") == 0)
+		store_visor_colour(value->choice);
 	else if (strcmp(id, "render_scale") == 0)
 		store_render_scale(value->choice);
 	else if (strcmp(id, "vr_graphics") == 0)
@@ -467,7 +486,12 @@ __declspec(dllexport) unsigned int OpenXrVrVisor(char* out, unsigned int size)
 	AcquireSRWLockExclusive(&lock);
 	if (follow_driver)
 		update_driver_visor();
-	strncpy_s(out, size, follow_driver ? driver_visor : visor, _TRUNCATE);
+	if (follow_driver)
+		strncpy_s(out, size, driver_visor, _TRUNCATE);
+	else if (coloured(visor))
+		_snprintf_s(out, size, _TRUNCATE, "%s_%s", visor, visor_colour); /* eg "iridium_dark_ice_blue" */
+	else
+		strncpy_s(out, size, visor, _TRUNCATE);
 	unsigned int gen = generation;
 	ReleaseSRWLockExclusive(&lock);
 	return gen;
@@ -626,7 +650,7 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 		starting = 0;
 		return 1;
 	}
-	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray", "tear_offs", "tear_off_key" };
+	static const char* ids[] = { "visor", "visor_colour", "render_scale", "vr_graphics", "rain_spray", "tear_offs", "tear_off_key" };
 	for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
 		const char* choice = read_choice(ids[i]);
 		if (choice) {

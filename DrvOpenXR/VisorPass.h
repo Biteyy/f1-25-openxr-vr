@@ -102,6 +102,7 @@ private:
 
 	unsigned visorGeneration = ~0u;
 	bool visorOn = false;
+	bool visorPhotochromic = false;
 
 	static const int kSlots = 4;
 	struct Slot {

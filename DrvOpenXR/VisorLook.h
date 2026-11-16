@@ -17,12 +17,19 @@
 
 namespace VisorLook {
 
+enum class Mode { Neutral, Tinted, Iridium };
+
 struct Visor {
-	float transmission[3]; // linear 0..1, straight ahead
+	float transmission[3] = { 1, 1, 1 }; // linear 0..1, straight ahead
+	Mode mode = Mode::Neutral;
+	float smoke = 1; // an iridium's darkness
+	bool rainbow = false; // the colour shifts across the visor
+	bool photochromic = false; // darkens in bright light (VisorPass does it from the scene)
 };
 
-/** The visor of an id from the "visor" setting ("dark_smoke", ...), or of "rgba_RRGGBBAA" (the outside colour and
- * darkness of the player's driver's visor, sRGB, from the plugin). False for any other id. */
+/** The visor of an id: "clear", "light_smoke", "dark_smoke", "photochromic", "<type>_<colour>" (type tinted,
+ * iridium or iridium_dark; a bare colour is tinted), or "rgba_RRGGBBAA" (the outside colour and darkness of the
+ * player's driver's visor, sRGB, from the plugin). False for any other id. */
 bool Find(const std::string& id, Visor& out);
 
 /**
