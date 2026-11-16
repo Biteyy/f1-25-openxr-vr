@@ -8,8 +8,11 @@
  * plugin (world position and velocity, tyres) and gives back sprites for RainDraw to draw:
  *   - spray: soft mist puffs thrown up behind each car's tyres on a wet track, in the VR tracking space (OpenXR:
  *     x right, y up, -z ahead, origin at the driver's eyes), plus a veil when the player drives through a cloud;
- *   - drops: the veil (a haze while the player drives through a cloud) and water drops on the visor, in metres on a
- *     head-locked plane, blown about by the airflow at speed.
+ *   - drops: water drops on the visor, in metres on a head-locked plane, blown up and out by the airflow at speed and
+ *     running down when slow;
+ *   - the visor's state (VisorState): the veil (a haze while the player drives through a cloud), misting when wet and
+ *     slow, and the tear-off stack: dirt and spray grime build up on the outer tear-off, which is pulled off (by the
+ *     player's button, or on a straight once it's dirty) and slides away with its drops.
  *
  * The track's wetness is read from the tyres the field is on (wets, inters), since the game's weather isn't
  * available to the plugin. The world's up axis and handedness aren't documented either, so they are learned from
@@ -45,8 +48,23 @@ struct Feed {
 	uint32_t drops; // setting: visor drops on
 	float trackLength; // metres, or 0 when unknown
 	Car cars[kMaxCars];
+	uint32_t tearOffs; // setting: 0 off, 1 automatic and the player's button, 2 only the button
+	uint32_t tearOffPulls; // counts up once for every press of the player's tear-off button
 };
-static_assert(sizeof(Car) == 36 && sizeof(Feed) == 32 + 36 * kMaxCars, "Rain::Feed must match the plugin's RainFeed");
+static_assert(sizeof(Car) == 36 && sizeof(Feed) == 40 + 36 * kMaxCars, "Rain::Feed must match the plugin's RainFeed");
+
+/** The visor's state for the eye pass (VisorPass): what is on the visor besides the drops. */
+struct VisorState {
+	float veil; // 0..1, the haze while the player's eyes are inside another car's spray
+	float wetness; // 0..1, the track's
+	float fog; // 0..1, misting at the bottom of the visor (wet and slow)
+	float dirt, grime; // 0..1, on the outer tear-off: rubber and dust specks, spray haze
+	float seed; // the outer tear-off's own speck pattern
+	uint32_t layersLeft; // tear-offs on the visor, the outer one included (0: the bare visor)
+	float peel; // 0 none, else 0..1 while the outer tear-off is pulled off sideways
+	float oldDirt, oldGrime, oldSeed; // the tear-off being pulled
+	float speed; // the player's, metres per second
+};
 
 struct Vec3 {
 	float x = 0, y = 0, z = 0;
@@ -77,14 +95,21 @@ public:
 	 */
 	void Update(const Feed* feed, double seconds, float dt);
 
-	/** Builds this frame's sprites: spray in the tracking space, the veil and drops on the head-locked plane */
+	/** Builds this frame's sprites: spray in the tracking space, drops on the head-locked plane (RainDraw's drop tile
+	 * is a normal map: VisorPass refracts the view through them) */
 	void Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const;
 
-	/** Whether anything would be drawn */
-	bool Active() const { return !mist.empty() || !beads.empty() || veil > 0.002f; }
+	/** The rest of the visor: veil, fog, tear-offs */
+	VisorState Visor() const;
 
 	/** Track wetness 0..1, for the log */
 	float Wetness() const { return wetness; }
+
+	/** Tear-offs pulled this session, for the log */
+	uint32_t TearOffsPulled() const { return kTearOffs - layersLeft - (outerOn ? 1u : 0u); }
+
+	/** How many tear-offs a session starts with */
+	static const uint32_t kTearOffs = 4;
 
 private:
 	struct Mist {
@@ -96,6 +121,7 @@ private:
 		float x, y; // visor plane, metres
 		float vx, vy;
 		float radius, age, life, stretch, angle;
+		bool onPulled; // sits on the tear-off being pulled, and slides off with it
 	};
 
 	void LearnFrame(const Car& player, float dt);
@@ -103,6 +129,8 @@ private:
 	bool OnPlayersStretch(float lap, float straightDistance) const;
 	void Emit(const Car& car, float dt);
 	void UpdateBeads(float dt, float playerSpeed, float hitRate);
+	void UpdateVisor(const Feed* feed, float dt);
+	void ResetVisor();
 
 	std::mt19937 rng;
 	float Random(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
@@ -139,6 +167,23 @@ private:
 	float playerLap = -1, trackLength = 0;
 	float emitDebt[kMaxCars][4] = {};
 	float beadDebt = 0;
+
+	// The visor: misting, and the tear-off stack. The outer tear-off carries the dirt and the drops; pulling it
+	// slides it off to the left (peel 0..1), taking its drops along, and the next one becomes the outer one.
+	float fog = 0;
+	float dirt = 0, grime = 0, seed = 0;
+	float oldDirt = 0, oldGrime = 0, oldSeed = 0;
+	float peel = 0; // 0: none; else running
+	float peelShift = 0; // how far the pulled tear-off has slid, visor-plane metres
+	bool outerOn = true; // a tear-off is on the visor
+	uint32_t layersLeft = kTearOffs - 1; // under the outer one
+	uint32_t lastPulls = 0;
+	bool havePulls = false;
+	float sinceTearOff = 1e3f; // seconds
+	uint32_t sessionCars = 0; // the field's size, to tell a new session
+	bool wasLive = false;
+	float layerSeed = 0;
+	void StartPeel();
 };
 
 } // namespace Rain

@@ -3,7 +3,6 @@
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
 
 #include "XrDriverPrivate.h"
-#include "generated/interfaces/vrtypes.h"
 
 #include <d3dcompiler.h>
 
@@ -12,17 +11,12 @@
 #include <cmath>
 #include <cstring>
 
-// One full-window triangle: the eye band scaled to the window's frame, the visor over it. For each pixel: its place in
-// the eye image, its direction through the eye's field of view (tangents), and so its place on the visor's plane, which
-// spans +-span (tangent) across and up.
+// One full-window triangle: the eye band scaled to the window's frame
 static const char kShaders[] = R"(
 cbuffer Constants : register(b0) {
-	float outW, outH, bandTop, bandSpan; // bandTop, bandSpan: the band's top and height as parts of the eye's height
-	float tanL, tanR, tanU, tanD;
-	float span, visorOn, encode, unused;
+	float outW, outH, encode, unused;
 };
 Texture2D eye : register(t0);
-Texture2D visor : register(t1);
 SamplerState linearClamp : register(s0);
 float4 vs(uint id : SV_VertexID) : SV_Position {
 	float2 p = float2((id << 1) & 2, id & 2);
@@ -34,13 +28,6 @@ float4 ps(float4 pos : SV_Position) : SV_Target {
 	if (encode > 0.5) {
 		c = saturate(c);
 		c = lerp(c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
-	}
-	if (visorOn > 0.5) {
-		float v = bandTop + uv.y * bandSpan;
-		float tx = tanL + uv.x * (tanR - tanL);
-		float ty = tanU - v * (tanU - tanD);
-		float4 z = visor.SampleLevel(linearClamp, float2(tx / span * 0.5 + 0.5, 0.5 - ty / span * 0.5), 0);
-		c = lerp(c, z.rgb, z.a); // the visor image has straight alpha
 	}
 	return float4(c, 1);
 }
@@ -207,10 +194,8 @@ void MirrorWindow::ReleaseResources()
 	root.Reset();
 	srvHeap.Reset();
 	rtvHeap.Reset();
-	visorTexture.Reset();
 	fence.Reset();
 	queue.Reset();
-	visorGeneration = ~0u;
 	eyeWidth = 0;
 	eyeHeight = 0;
 	eyeFormat = DXGI_FORMAT_UNKNOWN;
@@ -231,7 +216,6 @@ void MirrorWindow::Close()
 	}
 	closedByUser = false;
 	failed = false;
-	visorBroken = false;
 }
 
 bool MirrorWindow::MakePipeline(ID3D12Device* device)
@@ -253,10 +237,10 @@ bool MirrorWindow::MakePipeline(ID3D12Device* device)
 		return false;
 	}
 
-	D3D12_DESCRIPTOR_RANGE range{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, 0 };
+	D3D12_DESCRIPTOR_RANGE range{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
 	D3D12_ROOT_PARAMETER params[2] = {};
 	params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-	params[0].Constants = { 0, 0, 12 };
+	params[0].Constants = { 0, 0, 4 };
 	params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 	params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[1].DescriptorTable = { 1, &range };
@@ -288,83 +272,6 @@ bool MirrorWindow::MakePipeline(ID3D12Device* device)
 		OOVR_LOGF("VR view window: making the pipeline failed (0x%08x)", (unsigned)hr);
 		return false;
 	}
-	return true;
-}
-
-bool MirrorWindow::UploadVisor(const Visor& visor)
-{
-	ComPtr<ID3D12Device> device;
-	if (FAILED(queue->GetDevice(IID_PPV_ARGS(&device))))
-		return false;
-	HRESULT hr;
-	D3D12_RESOURCE_DESC desc{};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	desc.Width = visor.width;
-	desc.Height = visor.height;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // the frame holds the game's (already encoded) colours
-	desc.SampleDesc.Count = 1;
-	D3D12_HEAP_PROPERTIES defaultHeap{ D3D12_HEAP_TYPE_DEFAULT }, uploadHeap{ D3D12_HEAP_TYPE_UPLOAD };
-	ComPtr<ID3D12Resource> texture, upload;
-	ComPtr<ID3D12CommandAllocator> allocator;
-	ComPtr<ID3D12GraphicsCommandList> copy;
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
-	UINT64 total = 0;
-	device->GetCopyableFootprints(&desc, 0, 1, 0, &fp, nullptr, nullptr, &total);
-	D3D12_RESOURCE_DESC buf{};
-	buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	buf.Width = total;
-	buf.Height = buf.DepthOrArraySize = buf.MipLevels = 1;
-	buf.SampleDesc.Count = 1;
-	buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	unsigned char* mapped = nullptr;
-	if (FAILED(hr = device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture)))
-	    || FAILED(hr = device->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)))
-	    || FAILED(hr = upload->Map(0, nullptr, (void**)&mapped))
-	    || FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)))
-	    || FAILED(hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&copy)))) {
-		OOVR_LOGF("VR view window: uploading the visor failed (0x%08x), so it shows no visor", (unsigned)hr);
-		visorBroken = true;
-		return false;
-	}
-	for (unsigned y = 0; y < visor.height; y++)
-		memcpy(mapped + fp.Offset + (size_t)y * fp.Footprint.RowPitch, visor.rgba + (size_t)y * visor.width * 4, (size_t)visor.width * 4);
-	upload->Unmap(0, nullptr);
-	D3D12_TEXTURE_COPY_LOCATION dst{ texture.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
-	dst.SubresourceIndex = 0;
-	D3D12_TEXTURE_COPY_LOCATION src{ upload.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
-	src.PlacedFootprint = fp;
-	copy->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-	D3D12_RESOURCE_BARRIER barrier{};
-	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	barrier.Transition.pResource = texture.Get();
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	copy->ResourceBarrier(1, &barrier);
-	copy->Close();
-	ID3D12CommandList* lists[] = { copy.Get() };
-	queue->ExecuteCommandLists(1, lists);
-	// Once per visor change: wait for the copy, so the upload memory can go
-	UINT64 value = nextFenceValue++;
-	queue->Signal(fence.Get(), value);
-	if (fence->GetCompletedValue() < value) {
-		HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-		fence->SetEventOnCompletion(value, done);
-		WaitForSingleObject(done, 2000);
-		CloseHandle(done);
-	}
-	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-	srv.Format = desc.Format;
-	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srv.Texture2D.MipLevels = 1;
-	D3D12_CPU_DESCRIPTOR_HANDLE slot = srvHeap->GetCPUDescriptorHandleForHeapStart();
-	slot.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-	device->CreateShaderResourceView(texture.Get(), &srv, slot);
-	visorTexture = texture;
-	visorGeneration = visor.generation;
 	return true;
 }
 
@@ -457,7 +364,7 @@ bool MirrorWindow::CreateResources(ID3D12CommandQueue* gameQueue, const D3D12_RE
 		step = "CreateCommandList";
 	if (!*step) {
 		list->Close();
-		D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 2, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+		D3D12_DESCRIPTOR_HEAP_DESC heap{ D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
 		if (FAILED(hr = device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srvHeap))))
 			step = "CreateDescriptorHeap";
 		heap = { D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0 };
@@ -474,17 +381,13 @@ bool MirrorWindow::CreateResources(ID3D12CommandQueue* gameQueue, const D3D12_RE
 		return false;
 	}
 
-	// Views: the band at t0, no visor at t1 until one is uploaded; the frame's render target
+	// Views: the band at t0; the frame's render target
 	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
 	srv.Format = format;
 	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srv.Texture2D.MipLevels = 1;
-	D3D12_CPU_DESCRIPTOR_HANDLE h = srvHeap->GetCPUDescriptorHandleForHeapStart();
-	device->CreateShaderResourceView(band.Get(), &srv, h);
-	h.ptr += device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-	srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	device->CreateShaderResourceView(nullptr, &srv, h);
+	device->CreateShaderResourceView(band.Get(), &srv, srvHeap->GetCPUDescriptorHandleForHeapStart());
 	device->CreateRenderTargetView(target.Get(), nullptr, rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
 	queue = gameQueue;
@@ -527,9 +430,9 @@ void MirrorWindow::Harvest()
 		InvalidateRect(window, nullptr, FALSE);
 }
 
-void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
+void MirrorWindow::Submit(ID3D12Resource* eye, ID3D12CommandQueue* eyeQueue)
 {
-	if (failed || closedByUser || !eye || !eye->m_pResource || !eye->m_pCommandQueue)
+	if (failed || closedByUser || !eye || !eyeQueue)
 		return;
 
 	if (!hwnd.load()) {
@@ -543,9 +446,9 @@ void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
 	if (!window || IsIconic(window))
 		return; // closing, or minimised: nothing to show
 
-	D3D12_RESOURCE_DESC desc = eye->m_pResource->GetDesc();
-	if (!fence || desc.Width != eyeWidth || desc.Height != eyeHeight || desc.Format != eyeFormat || queue.Get() != eye->m_pCommandQueue) {
-		if (!CreateResources(eye->m_pCommandQueue, desc)) {
+	D3D12_RESOURCE_DESC desc = eye->GetDesc();
+	if (!fence || desc.Width != eyeWidth || desc.Height != eyeHeight || desc.Format != eyeFormat || queue.Get() != eyeQueue) {
+		if (!CreateResources(eyeQueue, desc)) {
 			failed = true;
 			return;
 		}
@@ -567,17 +470,13 @@ void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
 		return;
 	lastFrameTick = now;
 
-	bool drawVisor = visor.rgba && visor.width && !visorBroken;
-	if (drawVisor && visor.generation != visorGeneration)
-		drawVisor = UploadVisor(visor);
-
 	slot->allocator->Reset();
 	list->Reset(slot->allocator.Get(), pipeline.Get());
 
 	// The eye texture is read as the headset copy reads it (DX12Compositor::CopyToSwapchain): no barrier of its own
 	D3D12_TEXTURE_COPY_LOCATION dst{ band.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
 	dst.SubresourceIndex = 0;
-	D3D12_TEXTURE_COPY_LOCATION src{ eye->m_pResource, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
+	D3D12_TEXTURE_COPY_LOCATION src{ eye, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX };
 	src.SubresourceIndex = 0;
 	list->CopyTextureRegion(&dst, 0, 0, 0, &src, &bandBox);
 
@@ -599,10 +498,8 @@ void MirrorWindow::Submit(const vr::D3D12TextureData_t* eye, const Visor& visor)
 	ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
 	list->SetDescriptorHeaps(1, heaps);
 	list->SetGraphicsRootDescriptorTable(1, srvHeap->GetGPUDescriptorHandleForHeapStart());
-	float span = std::tan(visor.halfAngleDeg * 3.14159265f / 180.0f);
-	float constants[12] = { (float)kWidth, (float)kHeight, (float)bandBox.top / (float)eyeHeight, (float)(bandBox.bottom - bandBox.top) / (float)eyeHeight,
-		visor.tanLeft, visor.tanRight, visor.tanUp, visor.tanDown, span, drawVisor ? 1.0f : 0.0f, encodeSrgb ? 1.0f : 0.0f, 0.0f };
-	list->SetGraphicsRoot32BitConstants(0, 12, constants, 0);
+	float constants[4] = { (float)kWidth, (float)kHeight, encodeSrgb ? 1.0f : 0.0f, 0.0f };
+	list->SetGraphicsRoot32BitConstants(0, 4, constants, 0);
 	list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	list->DrawInstanced(3, 1, 0, 0);
 

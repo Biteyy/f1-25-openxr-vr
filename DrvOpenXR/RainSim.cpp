@@ -181,12 +181,15 @@ void Sim::Update(const Feed* feed, double seconds, float dt)
 	// car's spray, more at speed
 	float hitRate = 0;
 	if (dropsOn && haveFrame)
-		hitRate = (wetness * 5.0f + veil * 90.0f) * (0.35f + std::min(playerSpeed / 50.0f, 1.3f));
+		hitRate = (wetness * 8.0f + veil * 90.0f) * (0.35f + std::min(playerSpeed / 50.0f, 1.3f));
 	UpdateBeads(dt, playerIndex >= 0 ? playerSpeed : 0.0f, hitRate);
+	UpdateVisor(feed, dt);
 }
 
 void Sim::UpdateBeads(float dt, float speed, float hitRate)
 {
+	// At speed the rain hits as many small beads (the airflow breaks it up); slow, fewer and bigger ones that run
+	float fast = Smoothstep(15.0f, 60.0f, speed);
 	beadDebt += hitRate * dt;
 	while (beadDebt >= 1.0f) {
 		beadDebt -= 1.0f;
@@ -196,14 +199,23 @@ void Sim::UpdateBeads(float dt, float speed, float hitRate)
 		b.x = Random(-0.9f, 0.9f) * kVisorHalfSize;
 		b.y = Random(-0.7f, 0.9f) * kVisorHalfSize;
 		b.vx = b.vy = 0;
-		b.radius = Random(0.008f, 0.026f);
+		b.radius = Random(0.007f, 0.016f) + (1.0f - fast) * Random(0.004f, 0.03f);
 		b.age = 0;
 		b.life = Random(4.0f, 9.0f);
 		b.stretch = 1;
 		b.angle = 0;
+		b.onPulled = false;
 		beads.push_back(b);
 	}
 	beadDebt = std::min(beadDebt, 3.0f);
+
+	// A tear-off being pulled slides off to the left, taking the drops on it along
+	float slide = 0;
+	if (peel > 0) {
+		float shift = 2.3f * kVisorHalfSize * peel * peel; // the pull speeds up
+		slide = shift - peelShift;
+		peelShift = shift;
+	}
 
 	// The airflow over the helmet pushes drops out to the edges and up at speed; slowly, big ones run down
 	float air = std::clamp((speed - 8.0f) / 50.0f, 0.0f, 1.4f);
@@ -211,12 +223,14 @@ void Sim::UpdateBeads(float dt, float speed, float hitRate)
 		Bead& b = beads[i];
 		b.age += dt * (1.0f + air * 1.5f);
 		float tx = b.x * 1.6f * air + Random(-0.02f, 0.02f) * air;
-		float ty = 0.35f * air - (b.radius > 0.018f ? 0.015f : 0.0f) * (1.0f - std::min(air, 1.0f));
+		float ty = 0.35f * air - (b.radius > 0.016f ? 0.03f : 0.008f) * (1.0f - std::min(air, 1.0f));
 		float k = 1.0f - std::exp(-dt * 4.0f);
 		b.vx += (tx - b.vx) * k;
 		b.vy += (ty - b.vy) * k;
 		b.x += b.vx * dt;
 		b.y += b.vy * dt;
+		if (b.onPulled)
+			b.x -= slide;
 		float moving = std::sqrt(b.vx * b.vx + b.vy * b.vy);
 		b.stretch = 1.0f + std::min(moving * 5.0f, 3.0f);
 		if (moving > 0.005f)
@@ -228,6 +242,117 @@ void Sim::UpdateBeads(float dt, float speed, float hitRate)
 		}
 		i++;
 	}
+}
+
+void Sim::ResetVisor()
+{
+	fog = 0;
+	dirt = grime = 0;
+	oldDirt = oldGrime = 0;
+	peel = peelShift = 0;
+	outerOn = true;
+	layersLeft = kTearOffs - 1;
+	sinceTearOff = 1e3f;
+	layerSeed += 1.0f;
+	seed = layerSeed;
+}
+
+void Sim::StartPeel()
+{
+	if (!outerOn || peel > 0)
+		return;
+	oldDirt = dirt;
+	oldGrime = grime;
+	oldSeed = seed;
+	peel = 1e-4f;
+	peelShift = 0;
+	sinceTearOff = 0;
+	for (Bead& b : beads)
+		b.onPulled = true;
+	// The next tear-off is clean; with none left the bare visor gathers dirt from here
+	if (layersLeft > 0)
+		layersLeft--;
+	else
+		outerOn = false;
+	dirt = grime = 0;
+	layerSeed += 1.0f;
+	seed = layerSeed;
+}
+
+void Sim::UpdateVisor(const Feed* feed, float dt)
+{
+	bool live = feed && carCount > 0;
+	if (live && !wasLive)
+		ResetVisor(); // a new session: a fresh helmet with a full stack
+	wasLive = live;
+	if (!feed)
+		return;
+
+	// The player's button (any press while tear-offs are on), counted by the plugin
+	uint32_t mode = feed->tearOffs;
+	if (havePulls && feed->tearOffPulls != lastPulls && mode != 0)
+		StartPeel();
+	lastPulls = feed->tearOffPulls;
+	havePulls = true;
+
+	if (peel > 0) {
+		peel += dt / 0.32f; // a quick yank
+		if (peel >= 1.0f) {
+			peel = peelShift = 0;
+			beads.erase(std::remove_if(beads.begin(), beads.end(), [](const Bead& b) { return b.onPulled; }), beads.end());
+		}
+	}
+	sinceTearOff += dt;
+	if (dt <= 0 || playerIndex < 0)
+		return;
+
+	// Dirt: rubber and dust, a little all the time at speed and much more close behind another car; rain washes
+	// some of it off. Grime: the spray's dirty water, inside clouds and on a wet track.
+	float speed = playerSpeed;
+	float behind = 0;
+	if (haveFrame) {
+		for (uint32_t i = 0; i < carCount; i++) {
+			if ((int)i == playerIndex)
+				continue;
+			Vec3 rel = FromArray(cars[i].pos) - eye;
+			float ahead = Dot(rel, forward), side = std::fabs(Dot(rel, right));
+			if (ahead > 2.0f && ahead < 40.0f && side < 3.0f)
+				behind = std::max(behind, 1.0f - ahead / 40.0f);
+		}
+	}
+	float moving = Smoothstep(8.0f, 40.0f, speed);
+	float dry = 1.0f - 0.7f * wetness;
+	dirt = std::min(1.0f, dirt + dt * moving * dry * (1.0f / 900.0f + behind * (1.0f / 90.0f)));
+	grime = std::min(1.0f, grime + dt * (veil * 0.06f + wetness * moving * 0.002f + behind * wetness * 0.01f));
+
+	// Misting: a wet day, slow (the pit lane, behind the safety car), clears with the airflow
+	float fogTarget = wetness > 0.2f ? 0.35f * wetness * (1.0f - Smoothstep(5.0f, 17.0f, speed)) : 0.0f;
+	fog += (fogTarget - fog) * (1.0f - std::exp(-dt / (fogTarget > fog ? 6.0f : 1.5f)));
+
+	// Automatic: on a straight at speed, once the tear-off blocks the view, at most every 20 s
+	if (mode == 1 && outerOn && peel == 0 && sinceTearOff > 20.0f && speed > 55.0f && std::fabs(lastSteer) < 0.1f) {
+		float blocked = dirt * 0.8f + grime + std::min((float)beads.size() / 150.0f, 1.0f) * 0.3f;
+		if (blocked > 0.75f)
+			StartPeel();
+	}
+}
+
+VisorState Sim::Visor() const
+{
+	VisorState v{};
+	v.veil = veil;
+	v.wetness = wetness;
+	v.fog = fog;
+	v.dirt = dirt;
+	v.grime = grime;
+	v.seed = seed;
+	v.layersLeft = layersLeft + (outerOn ? 1u : 0u);
+	v.peel = peel;
+	v.oldDirt = oldDirt;
+	v.oldGrime = oldGrime;
+	v.oldSeed = oldSeed;
+	v.speed = playerIndex >= 0 ? playerSpeed : 0.0f;
+	return v;
 }
 
 void Sim::LearnFrame(const Car& player, float dt)
@@ -370,8 +495,6 @@ void Sim::Build(std::vector<Sprite>& spray, std::vector<Sprite>& drops) const
 		}
 	}
 
-	if (veil > 0.002f)
-		drops.push_back({ {}, kVisorHalfSize, kVisorHalfSize, 0.0f, veil, kTileFlat });
 	for (const Bead& b : beads) {
 		// Landing: a quick splat, wider and stronger, that settles into a bead within a tenth of a second
 		float splat = std::exp(-b.age / 0.05f);

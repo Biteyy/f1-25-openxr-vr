@@ -8,9 +8,10 @@
 
 #include "XrDriverPrivate.h"
 
-#include "HelmetView.h"
 #include "MirrorWindow.h"
-#include "RainView.h"
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+#include "VisorPass.h"
+#endif
 #include "XrController.h"
 #include "XrHMD.h"
 
@@ -78,13 +79,12 @@ private:
 	std::unique_ptr<Compositor> skybox_compositor;
 	std::vector<std::shared_ptr<Compositor>> overlay_compositors;
 
-	// The helmet view layer, and the frame's layer list when it is added (kept to avoid allocating every frame)
-	HelmetView helmet;
-	RainView rain; // tyre spray and visor drops
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+	// The view through the helmet (tint, rain, tyre spray, tear-offs), drawn into each eye as it goes to the headset
+	VisorPass visor;
+	bool DrawVisor(int eye, ID3D12CommandQueue* queue, ID3D12Resource* src, ID3D12Resource* dst, DXGI_FORMAT format);
 	MirrorWindow viewWindow; // the addon's "VR view window" setting
 #endif
-	std::vector<const XrCompositionLayerBaseHeader*> frameLayers;
 
 	/**
 	 * Updates the current interaction profile in use according to the runtime.

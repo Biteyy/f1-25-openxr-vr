@@ -218,8 +218,6 @@ add_library(DrvOpenXR STATIC
 
 	DrvOpenXR/XrBackend.cpp
 	DrvOpenXR/XrBackend.h
-	DrvOpenXR/HelmetView.cpp
-	DrvOpenXR/HelmetView.h
 	DrvOpenXR/AddonSettings.cpp
 	DrvOpenXR/AddonSettings.h
 	DrvOpenXR/MirrorWindow.cpp
@@ -228,8 +226,8 @@ add_library(DrvOpenXR STATIC
 	DrvOpenXR/RainSim.h
 	DrvOpenXR/RainDraw.cpp
 	DrvOpenXR/RainDraw.h
-	DrvOpenXR/RainView.cpp
-	DrvOpenXR/RainView.h
+	DrvOpenXR/VisorPass.cpp
+	DrvOpenXR/VisorPass.h
 	DrvOpenXR/VisorLook.cpp
 	DrvOpenXR/VisorLook.h
 

@@ -2,8 +2,8 @@
 
 /**
  * Draws RainSim's sprites with Direct3D 12 on the game's own device and queue: textured quads (a soft mist puff, a
- * water drop, or flat) blended premultiplied onto a cleared target, so the result is a transparent layer the
- * OpenXR compositor puts over the game's image. No OpenXR in here, so it can be tried on its own.
+ * water drop as a normal map, or flat) blended premultiplied: the spray straight into the eye image, the drops into
+ * VisorPass's water map. No OpenXR in here, so it can be tried on its own.
  */
 
 #include "RainSim.h"
@@ -34,12 +34,12 @@ public:
 	~RainDraw();
 
 	/**
-	 * Clears the target to transparent, draws the passes into it and submits that on the queue (without waiting).
-	 * target must be in the render target state, and stays in it. Sets things up on first use; false if that
-	 * failed (logged once) or the device changed.
+	 * Draws the passes into the target (cleared to transparent first if clear) and submits that on the queue (without
+	 * waiting). target must be in the render target state, and stays in it; format is the typed format to draw it
+	 * as. Sets things up on first use; false if that failed (logged once) or the device changed.
 	 */
 	bool Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* target, DXGI_FORMAT format,
-	    const Pass* passes, size_t passCount);
+	    const Pass* passes, size_t passCount, bool clear);
 
 	/** Waits for the GPU to finish with everything submitted, then frees it all. */
 	void Release();
@@ -53,7 +53,7 @@ public:
 
 private:
 	bool Setup(ID3D12Device* device, ID3D12CommandQueue* queue);
-	bool MakePipeline(DXGI_FORMAT format);
+	ID3D12PipelineState* PipelineFor(DXGI_FORMAT format);
 	bool UploadAtlas(ID3D12CommandQueue* queue);
 	void WaitIdle();
 
@@ -65,15 +65,17 @@ private:
 
 	ComPtr<ID3D12RootSignature> rootSignature;
 	ComPtr<ID3DBlob> vertexShader, pixelShader;
-	ComPtr<ID3D12PipelineState> pipeline;
-	DXGI_FORMAT pipelineFormat = DXGI_FORMAT_UNKNOWN;
+	// One pipeline per target format (the eye image's, the water map's)
+	static const int kFormats = 4;
+	ComPtr<ID3D12PipelineState> pipelines[kFormats];
+	DXGI_FORMAT pipelineFormats[kFormats] = {};
 
 	ComPtr<ID3D12Resource> atlas;
 	ComPtr<ID3D12DescriptorHeap> srvHeap;
 	ComPtr<ID3D12DescriptorHeap> rtvHeap; // one RTV, rewritten each frame for that frame's target
 
-	// A few frames in flight, each with its own commands and upload memory
-	static const int kSlots = 3;
+	// A few frames in flight (three draws a frame), each with its own commands and upload memory
+	static const int kSlots = 9;
 	struct Slot {
 		ComPtr<ID3D12CommandAllocator> allocator;
 		ComPtr<ID3D12GraphicsCommandList> list;

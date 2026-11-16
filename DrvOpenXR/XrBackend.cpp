@@ -36,6 +36,10 @@
 
 #include "tmp_gfx/TemporaryGraphics.h"
 
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+#include "../OpenOVR/Compositor/dx12compositor.h"
+#endif
+
 #if defined(SUPPORT_VK)
 #include "tmp_gfx/TemporaryVk.h"
 #endif
@@ -383,14 +387,49 @@ void XrBackend::CheckOrInitCompositors(const vr::Texture_t* tex)
 		temporaryGraphics.reset();
 	}
 
-	for (std::unique_ptr<Compositor>& compositor : compositors) {
+	for (int eye = 0; eye < XruEyeCount; eye++) {
+		std::unique_ptr<Compositor>& compositor = compositors[eye];
 		// Skip a compositor if it's already set up
 		if (compositor)
 			continue;
 
 		compositor = BaseCompositor::CreateCompositorAPI(tex);
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+		// The eyes go to the headset through the visor pass
+		if (tex->eType == vr::TextureType_DirectX12) {
+			static_cast<DX12Compositor*>(compositor.get())->eyePass = [this, eye](ID3D12CommandQueue* queue, ID3D12Resource* src, ID3D12Resource* dst, DXGI_FORMAT format) {
+				return DrawVisor(eye, queue, src, dst, format);
+			};
+		}
+#endif
 	}
 }
+
+#if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
+bool XrBackend::DrawVisor(int eye, ID3D12CommandQueue* queue, ID3D12Resource* src, ID3D12Resource* dst, DXGI_FORMAT format)
+{
+	VisorPass::EyeView views[2];
+	for (int e = 0; e < 2; e++) {
+		const XrPosef& pose = projectionViews[e].pose;
+		const XrFovf& fov = projectionViews[e].fov;
+		VisorPass::EyeView& v = views[e];
+		v.orientation[0] = pose.orientation.x, v.orientation[1] = pose.orientation.y;
+		v.orientation[2] = pose.orientation.z, v.orientation[3] = pose.orientation.w;
+		v.position[0] = pose.position.x, v.position[1] = pose.position.y, v.position[2] = pose.position.z;
+		v.angleLeft = fov.angleLeft, v.angleRight = fov.angleRight, v.angleUp = fov.angleUp, v.angleDown = fov.angleDown;
+	}
+	VisorPass::FrameInput input;
+	Rain::Feed feed{};
+	if (eye == 0) {
+		feed.size = sizeof(feed);
+		if (AddonSettings::RainFeed(feed))
+			input.feed = &feed;
+		input.visorGeneration = AddonSettings::Visor(input.visor);
+		input.mirror = AddonSettings::ViewWindow();
+	}
+	return visor.Draw(eye, queue, src, dst, format, views, input);
+}
+#endif
 
 void XrBackend::WaitForTrackingData()
 {
@@ -494,21 +533,14 @@ void XrBackend::StoreEyeTexture(
 		comp.Invoke(texture, bounds, layer.subImage, (XruEye)eye, submitFlags);
 
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
-	// The VR view window shows the left eye as the game rendered it
+	// The VR view window shows the left eye as the headset does (the visor pass keeps a copy), or as the game
+	// rendered it when the pass isn't running
 	if (eye == vr::Eye_Left && texture->eType == vr::TextureType_DirectX12) {
+		const auto* data = (const vr::D3D12TextureData_t*)texture->handle;
 		if (AddonSettings::ViewWindow()) {
-			// With the helmet visor over it, as the headset shows it
-			MirrorWindow::Visor visor;
-			visor.rgba = helmet.Image(visor.width, visor.height, visor.generation);
-			visor.halfAngleDeg = HelmetView::HalfAngleDeg();
-			const XrFovf& fov = projectionViews[eye].fov;
-			visor.tanLeft = std::tan(fov.angleLeft);
-			visor.tanRight = std::tan(fov.angleRight);
-			visor.tanUp = std::tan(fov.angleUp);
-			visor.tanDown = std::tan(fov.angleDown);
-			viewWindow.Submit((const vr::D3D12TextureData_t*)texture->handle, visor);
-		}
-		else
+			ID3D12Resource* shown = visor.MirrorImage();
+			viewWindow.Submit(shown ? shown : data->m_pResource, data->m_pCommandQueue);
+		} else
 			viewWindow.Close();
 	}
 #endif
@@ -587,19 +619,6 @@ void XrBackend::SubmitFrames(bool showSkybox, bool postPresent)
 	} else if (app_layer) {
 		layer_count = 1;
 		headers = &app_layer;
-	}
-
-	// Tyre spray and visor drops, then the helmet view on top of everything, only while the game draws a 3D scene
-	// (not over loading screens)
-	if (app_layer) {
-		frameLayers.assign(headers, headers + layer_count);
-		rain.AddLayers(GetCurrentGraphicsBinding(), projectionViews, mainLayer.space, frameLayers);
-		if (const XrCompositionLayerBaseHeader* helmetLayer = helmet.GetLayer(GetCurrentGraphicsBinding()))
-			frameLayers.push_back(helmetLayer);
-		if ((int)frameLayers.size() != layer_count) {
-			headers = frameLayers.data();
-			layer_count = (int)frameLayers.size();
-		}
 	}
 
 	// It's ok if no layers have been added at this point,
@@ -972,10 +991,9 @@ void XrBackend::PrepareForSessionShutdown()
 	}
 	skybox_compositor.reset();
 	overlay_compositors.clear();
-	helmet.Reset();
-	rain.Reset();
 #if defined(SUPPORT_DX) && defined(SUPPORT_DX12)
-	viewWindow.Close(); // its swapchain is on the game's queue, which may go with the session
+	viewWindow.Close(); // its resources are on the game's queue, which may go with the session
+	visor.Release();
 #endif
 	if (infoSet != XR_NULL_HANDLE) {
 		OOVR_FAILED_XR_ABORT(xrDestroyActionSet(infoSet));

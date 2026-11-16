@@ -13,14 +13,9 @@
 #include <thread>
 #include <vector>
 
-namespace vr {
-struct D3D12TextureData_t;
-}
-
 /**
- * VR view window: a desktop window showing the game's left-eye image as it renders it for the headset, cropped to
- * 16:9, for screen sharing or recording, with the helmet visor drawn over it as the headset shows it (the headset's
- * compositor adds the visor later, so the window draws it itself). The tyre spray isn't in it.
+ * VR view window: a desktop window showing the left eye as the headset shows it (VisorPass's copy, with the visor,
+ * rain and spray), cropped to 16:9, for screen sharing or recording.
  *
  * The window is an ordinary GDI window: each frame is drawn at 1280x720 on the game's queue, read back, and painted
  * with StretchDIBits. That way every capture method sees it (Discord, OBS window capture, Teams, PrintWindow and
@@ -37,17 +32,9 @@ public:
 	MirrorWindow& operator=(const MirrorWindow&) = delete;
 	~MirrorWindow();
 
-	/** The visor to draw over the image: HelmetView's image and the left eye's field of view (tangents). */
-	struct Visor {
-		const unsigned char* rgba = nullptr; // sRGB, straight alpha; null: no visor
-		unsigned width = 0, height = 0, generation = 0;
-		float halfAngleDeg = 80.0f; // the image spans +- this on a flat plane
-		float tanLeft = -1, tanRight = 1, tanUp = 1, tanDown = -1;
-	};
-
-	/** Shows the eye image (opening the window first if needed), with the visor over it. Call from the thread that
-	 * submits the eye. */
-	void Submit(const vr::D3D12TextureData_t* eye, const Visor& visor);
+	/** Shows the eye image (opening the window first if needed): read on queue without a barrier, so it must be in a
+	 * state a copy can read. Call from the thread that submits the eye. */
+	void Submit(ID3D12Resource* eye, ID3D12CommandQueue* queue);
 
 	/** Closes the window. The next Submit opens it again. */
 	void Close();
@@ -61,7 +48,6 @@ private:
 	bool OpenWindow();
 	bool CreateResources(ID3D12CommandQueue* queue, const D3D12_RESOURCE_DESC& eye);
 	bool MakePipeline(ID3D12Device* device);
-	bool UploadVisor(const Visor& visor);
 	void ReleaseResources();
 	void Harvest(); // copies finished readbacks into the window's frame
 	void Paint(HWND window);
@@ -91,13 +77,10 @@ private:
 	} slots[kSlots];
 	Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
 	Microsoft::WRL::ComPtr<ID3D12Resource> band; // the eye's 16:9 band, copied as it is (the eye texture has no view of ours)
-	Microsoft::WRL::ComPtr<ID3D12Resource> target; // kWidth x kHeight BGRA8: the band scaled, the visor over it
+	Microsoft::WRL::ComPtr<ID3D12Resource> target; // kWidth x kHeight BGRA8: the band scaled
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> root;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
-	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap, rtvHeap; // srv: band, visor
-	Microsoft::WRL::ComPtr<ID3D12Resource> visorTexture;
-	unsigned visorGeneration = ~0u;
-	bool visorBroken = false; // the visor couldn't be uploaded: the window shows the plain image
+	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap, rtvHeap; // srv: the band
 	unsigned long long lastFrameTick = 0;
 
 	// The eye texture the resources were made for, and the band of it that is shown

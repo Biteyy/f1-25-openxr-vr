@@ -69,6 +69,7 @@ struct VOut {
 	float2 uv : UV;
 	float alpha : ALPHA;
 	nointerpolation uint tile : TILE;
+	nointerpolation float angle : ANGLE;
 };
 
 VOut vs(VIn i) {
@@ -84,13 +85,23 @@ VOut vs(VIn i) {
 	o.uv = float2(corner.x * 0.5 + 0.5, 0.5 - corner.y * 0.5);
 	o.alpha = i.alpha;
 	o.tile = i.tile;
+	o.angle = i.angle;
 	return o;
 }
 
 float4 ps(VOut i) : SV_Target {
 	float4 t = atlas.Sample(linearClamp, float3(i.uv, i.tile));
-	if (i.tile == 1)
-		return t * i.alpha; // the drop carries its own (premultiplied) colours
+	if (i.tile == 1) {
+		// The drop is a normal map (premultiplied): its surface slope, turned with the sprite, and its thickness
+		if (t.a > 0.0001) {
+			float2 slope = t.rg / t.a * 2.0 - 1.0;
+			float s, c;
+			sincos(i.angle, s, c);
+			slope = float2(c * slope.x - s * slope.y, s * slope.x + c * slope.y);
+			t.rg = (slope * 0.5 + 0.5) * t.a;
+		}
+		return t * i.alpha;
+	}
 	return float4(tint.rgb, 1.0) * (t.a * i.alpha);
 }
 )";
@@ -145,22 +156,18 @@ void DrawTile(UINT tile, std::vector<float>& rgba)
 				a = std::clamp(a, 0.0f, 1.0f);
 				p[0] = p[1] = p[2] = p[3] = a;
 			} else if (tile == Rain::kTileDrop) {
-				// A water drop seen on a visor: a slightly dark lens with a darker rim, a highlight up left and a
-				// faint bright crescent where light comes through at the bottom
-				float inside = 1 - Smooth(0.86f, 0.94f, r);
-				float rim = Smooth(0.55f, 0.88f, r) * inside;
-				float body = 0.16f * inside + 0.32f * rim;
-				float c = 0, a = body; // black, alpha body
-				float hx = u + 0.32f, hy = v + 0.36f;
-				float spot = (1 - Smooth(0.0f, 0.26f, std::sqrt(hx * hx * 1.6f + hy * hy))) * inside * 0.85f;
-				c = spot + c * (1 - spot);
-				a = spot + a * (1 - spot);
-				float cx = u - 0.05f, cy = v - 0.45f;
-				float crescent = (1 - Smooth(0.15f, 0.45f, std::sqrt(cx * cx * 0.5f + cy * cy * 2.5f))) * inside * 0.28f;
-				c = crescent + c * (1 - crescent);
-				a = crescent + a * (1 - crescent);
-				p[0] = p[1] = p[2] = c;
-				p[3] = a;
+				// A water drop as a lens, for VisorPass: a dome whose surface slope (R, G: right and up, -1..1 as
+				// 0..1, steepest at the rim) bends the view through it, its thickness (B), and its coverage (A, a
+				// soft edge). Premultiplied, so drops blend and the mips average.
+				const float edge = 0.9f;
+				float inside = 1 - Smooth(edge - 0.08f, edge, r);
+				float rr = std::min(r / edge, 1.0f);
+				float height = std::sqrt(std::max(0.0f, 1.0f - rr * rr));
+				float sx = std::clamp(u / edge, -1.0f, 1.0f), sy = std::clamp(-v / edge, -1.0f, 1.0f); // v runs down
+				p[0] = (sx * 0.5f + 0.5f) * inside;
+				p[1] = (sy * 0.5f + 0.5f) * inside;
+				p[2] = height * inside;
+				p[3] = inside;
 			} else {
 				p[0] = p[1] = p[2] = p[3] = 1.0f;
 			}
@@ -191,8 +198,10 @@ void RainDraw::Release()
 			s.upload->Unmap(0, nullptr);
 		s = Slot();
 	}
-	pipeline.Reset();
-	pipelineFormat = DXGI_FORMAT_UNKNOWN;
+	for (int i = 0; i < kFormats; i++) {
+		pipelines[i].Reset();
+		pipelineFormats[i] = DXGI_FORMAT_UNKNOWN;
+	}
 	rootSignature.Reset();
 	vertexShader.Reset();
 	pixelShader.Reset();
@@ -400,8 +409,20 @@ bool RainDraw::UploadAtlas(ID3D12CommandQueue* queue)
 	return true;
 }
 
-bool RainDraw::MakePipeline(DXGI_FORMAT format)
+ID3D12PipelineState* RainDraw::PipelineFor(DXGI_FORMAT format)
 {
+	int slot = -1;
+	for (int i = 0; i < kFormats; i++) {
+		if (pipelines[i] && pipelineFormats[i] == format)
+			return pipelines[i].Get();
+		if (!pipelines[i] && slot < 0)
+			slot = i;
+	}
+	if (slot < 0) {
+		RAIN_LOG("Rain: more target formats than expected (%d), so no spray or visor drops", (int)format);
+		failed = true;
+		return nullptr;
+	}
 	D3D12_INPUT_ELEMENT_DESC inputs[] = {
 		{ "POS", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Instance, pos), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
 		{ "HALF", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Instance, half), D3D12_INPUT_CLASSIFICATION_PER_INSTANCE_DATA, 1 },
@@ -428,19 +449,18 @@ bool RainDraw::MakePipeline(DXGI_FORMAT format)
 	desc.NumRenderTargets = 1;
 	desc.RTVFormats[0] = format;
 	desc.SampleDesc.Count = 1;
-	pipeline.Reset();
-	HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline));
+	HRESULT hr = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipelines[slot]));
 	if (FAILED(hr)) {
 		RAIN_LOG("Rain: CreateGraphicsPipelineState failed (0x%08lx) for format %d, so no spray or visor drops", (unsigned long)hr, (int)format);
 		failed = true;
-		return false;
+		return nullptr;
 	}
-	pipelineFormat = format;
-	return true;
+	pipelineFormats[slot] = format;
+	return pipelines[slot].Get();
 }
 
 bool RainDraw::Render(ID3D12Device* dev, ID3D12CommandQueue* queue, ID3D12Resource* target, DXGI_FORMAT format,
-    const Pass* passes, size_t passCount)
+    const Pass* passes, size_t passCount, bool clear)
 {
 	if (device && dev != device)
 		Release(); // a new device: start over
@@ -448,7 +468,8 @@ bool RainDraw::Render(ID3D12Device* dev, ID3D12CommandQueue* queue, ID3D12Resour
 		return false;
 	if (!device && !Setup(dev, queue))
 		return false;
-	if (format != pipelineFormat && !MakePipeline(format))
+	ID3D12PipelineState* pipeline = PipelineFor(format);
+	if (!pipeline)
 		return false;
 	lastQueue = queue;
 
@@ -459,15 +480,18 @@ bool RainDraw::Render(ID3D12Device* dev, ID3D12CommandQueue* queue, ID3D12Resour
 		WaitForSingleObject(fenceEvent, 1000);
 	}
 	s.allocator->Reset();
-	s.list->Reset(s.allocator.Get(), pipeline.Get());
+	s.list->Reset(s.allocator.Get(), pipeline);
 
+	// The view is written on the CPU and copied into the list as it is recorded, so one descriptor does for every draw
 	D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
 	rtvDesc.Format = format;
 	rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 	D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
 	device->CreateRenderTargetView(target, &rtvDesc, rtv);
-	const float clear[4] = { 0, 0, 0, 0 };
-	s.list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+	if (clear) {
+		const float transparent[4] = { 0, 0, 0, 0 };
+		s.list->ClearRenderTargetView(rtv, transparent, 0, nullptr);
+	}
 	s.list->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 	s.list->SetGraphicsRootSignature(rootSignature.Get());
 	ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };

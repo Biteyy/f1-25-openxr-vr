@@ -29,6 +29,13 @@ static float render_scale = 0.0f; // per axis; 0: opencomposite.ini's
 static int view_window = 0; // the VR view window for screen sharing
 static int rain_spray = 2; // tyre spray: 0 off, 1 light, 2 normal, 3 heavy
 static int visor_drops = 1; // rain drops on the visor
+static int starting = 1; // SwoftyAddonInit is reading the settings (not a change while the game runs)
+
+/* tear_off.c: the tear-off button */
+void tear_off_init(const SwoftyApi* api);
+void tear_off_setting(const char* id, const char* choice, int at_start);
+uint32_t tear_off_mode(void);
+uint32_t tear_off_pulls(void);
 
 /* ---- VR graphics presets ----------------------------------------------------------------------------------------
  * Whole elements of hardware_settings_config_vr.xml, as the game itself writes them. "performance" is the low set
@@ -450,6 +457,8 @@ static void on_change(const char* id, const SwoftySettingValue* value, void* use
 		apply_graphics(value->choice);
 	else if (strcmp(id, "rain_spray") == 0)
 		store_rain_spray(value->choice);
+	else if (strcmp(id, "tear_offs") == 0 || strcmp(id, "tear_off_key") == 0)
+		tear_off_setting(id, value->choice, starting);
 }
 
 /* The current visor id (eg "dark_smoke", or "off") copied into out, and a number that changes whenever it does. */
@@ -504,8 +513,10 @@ typedef struct {
 	uint32_t spray, drops;
 	float track_length; // metres, 0 when unknown
 	RainCar cars[32];
+	uint32_t tear_offs; // 0 off, 1 automatic and the button, 2 the button only
+	uint32_t tear_off_pulls; // counts the button's presses
 } RainFeed;
-_Static_assert(sizeof(RainCar) == 36 && sizeof(RainFeed) == 32 + 36 * 32, "RainFeed must match RainSim.h's Rain::Feed");
+_Static_assert(sizeof(RainCar) == 36 && sizeof(RainFeed) == 40 + 36 * 32, "RainFeed must match RainSim.h's Rain::Feed");
 
 static const SwoftyLive* live;
 static ULONGLONG next_live_look;
@@ -542,6 +553,8 @@ __declspec(dllexport) int OpenXrVrRain(void* out_, unsigned int size)
 	AcquireSRWLockExclusive(&lock);
 	out->spray = (uint32_t)rain_spray;
 	out->drops = (uint32_t)visor_drops;
+	out->tear_offs = tear_off_mode();
+	out->tear_off_pulls = tear_off_pulls();
 	const SwoftyLive* table = (rain_spray || visor_drops) && swofty ? find_live() : NULL;
 	ReleaseSRWLockExclusive(&lock);
 	if (!table || !table->available())
@@ -607,11 +620,13 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 {
 	swofty = api;
 	settings_tile_init(api);
+	tear_off_init(api);
 	if (api->version < 3 || !api->setting || !api->watch_setting) {
 		api->log("openxr_vr_settings: this Swofty core has no settings API; the defaults apply");
+		starting = 0;
 		return 1;
 	}
-	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray" };
+	static const char* ids[] = { "visor", "render_scale", "vr_graphics", "rain_spray", "tear_offs", "tear_off_key" };
 	for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
 		const char* choice = read_choice(ids[i]);
 		if (choice) {
@@ -633,6 +648,8 @@ __declspec(dllexport) int SwoftyAddonInit(const SwoftyApi* api)
 		if (!api->watch_setting(toggles[i], on_change, NULL))
 			api->log("openxr_vr_settings: can't watch %s; changes apply from the next start", toggles[i]);
 	}
-	api->log("openxr_vr_settings: visor %s, render scale %.2f (0: opencomposite.ini), view window %s", visor, render_scale, view_window ? "on" : "off");
+	starting = 0;
+	api->log("openxr_vr_settings: visor %s, render scale %.2f (0: opencomposite.ini), view window %s, tear-offs %s", visor, render_scale,
+	    view_window ? "on" : "off", tear_off_mode() == 0 ? "off" : tear_off_mode() == 2 ? "button only" : "automatic and button");
 	return 1;
 }

@@ -2,9 +2,18 @@
 
 #include "dxcompositor.h"
 
+#include <functional>
+
 class DX12Compositor : public Compositor {
 public:
 	DX12Compositor(vr::D3D12TextureData_t* td);
+
+	/**
+	 * Draws an eye into the swapchain in place of the plain copy (the addon's visor, VisorPass): the game's queue,
+	 * its texture, the acquired swapchain image (render target state, to be left in it) and that image's typed
+	 * format. It submits its own work on the queue. False: the plain copy is made instead.
+	 */
+	std::function<bool(ID3D12CommandQueue* queue, ID3D12Resource* src, ID3D12Resource* dst, DXGI_FORMAT format)> eyePass;
 
 	// Override
 	virtual ~DX12Compositor() override;

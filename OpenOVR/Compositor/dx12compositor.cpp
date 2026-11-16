@@ -230,7 +230,12 @@ void DX12Compositor::CopyToSwapchain(const vr::Texture_t* texture, const vr::VRT
 	sourceRegion.front = 0;
 	sourceRegion.back = 1;
 
-	commandList->CopyResource(imagesHandles[currentIndex].texture, input->m_pResource);
+	// An eye goes through the eye pass when there is one (it submits its own work, ahead of this list); anything
+	// else, or a pass that can't run, is copied as it is
+	bool drawn = eye.has_value() && eyePass
+	    && eyePass(queue.Get(), input->m_pResource, imagesHandles[currentIndex].texture, (DXGI_FORMAT)createInfo.format);
+	if (!drawn)
+		commandList->CopyResource(imagesHandles[currentIndex].texture, input->m_pResource);
 
 	commandList->Close();
 	ID3D12CommandList* set[] = { commandList };
